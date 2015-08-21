@@ -3,7 +3,7 @@
 Name:             zuul
 Summary:          GoodData customized Zuul gatekeeper
 Version:          2.1.1
-Release:          1.gdc
+Release:          2.gdc
 
 Vendor:           GoodData
 Group:            GoodData/Tools
@@ -38,5 +38,8 @@ GoodData customized Zuul gatekeeper
 %attr(0755, root, root) %{install_dir}/lib64
 
 %changelog
+* Wed Aug 12 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-2.gdc
+- Better webhook event handling in the github integration
+
 * Wed Aug 12 2015 Yury Tsarev <yury.tsarev@gooddata.com> 2.1.1-1.gdc
 - First Zuul build - customized github integration included

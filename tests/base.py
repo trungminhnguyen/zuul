@@ -457,7 +457,7 @@ class FakeGerritConnection(zuul.connection.gerrit.GerritConnection):
             l = [change.query() for change in self.changes.values()]
         return l
 
-    def startWatching(self, *args, **kw):
+    def _start_watcher_thread(self, *args, **kw):
         pass
 
     def getGitUrl(self, project):
@@ -936,6 +936,11 @@ class ZuulTestCase(BaseTestCase):
         self.swift = zuul.lib.swift.Swift(self.config)
         self.webapp = zuul.webapp.WebApp(self.sched, port=0)
 
+        self.event_queues = [
+            self.sched.result_event_queue,
+            self.sched.trigger_event_queue
+        ]
+
         # Set up connections and give out the default gerrit for testing
         self.configure_connections()
         self.sched.registerConnections(self.connections, self.webapp)
@@ -1011,6 +1016,8 @@ class ZuulTestCase(BaseTestCase):
                 if con_config['server'] not in self.gerrit_queues_dbs.keys():
                     self.gerrit_queues_dbs[con_config['server']] = \
                         Queue.Queue()
+                    self.event_queues.append(
+                        self.gerrit_queues_dbs[con_config['server']])
                 self.connections[con_name] = FakeGerritConnection(
                     con_name, con_config,
                     changes_db=self.gerrit_changes_dbs[con_config['server']],
@@ -1029,6 +1036,8 @@ class ZuulTestCase(BaseTestCase):
         if 'gerrit' in self.config.sections():
             self.gerrit_changes_dbs['gerrit'] = {}
             self.gerrit_queues_dbs['gerrit'] = Queue.Queue()
+            self.event_queues.append(
+                self.gerrit_queues_dbs['gerrit'])
             self.connections['gerrit'] = FakeGerritConnection(
                 '_legacy_gerrit', dict(self.config.items('gerrit')),
                 changes_db=self.gerrit_changes_dbs['gerrit'],
@@ -1271,15 +1280,21 @@ class ZuulTestCase(BaseTestCase):
                 return False
         return True
 
+    def eventQueuesEmpty(self):
+        for queue in self.event_queues:
+            yield queue.empty()
+
+    def eventQueuesJoin(self):
+        for queue in self.event_queues:
+            queue.join()
+
     def waitUntilSettled(self):
         self.log.debug("Waiting until settled...")
         start = time.time()
         while True:
             if time.time() - start > 10:
                 print 'queue status:',
-                print self.sched.trigger_event_queue.empty(),
-                print self.sched.result_event_queue.empty(),
-                print self.fake_gerrit.event_queue.empty(),
+                print ' '.join(self.eventQueuesEmpty())
                 print self.areAllBuildsWaiting()
                 raise Exception("Timeout waiting for Zuul to settle")
             # Make sure no new events show up while we're checking
@@ -1288,14 +1303,10 @@ class ZuulTestCase(BaseTestCase):
             if self.haveAllBuildsReported():
                 # Join ensures that the queue is empty _and_ events have been
                 # processed
-                self.fake_gerrit.event_queue.join()
-                self.sched.trigger_event_queue.join()
-                self.sched.result_event_queue.join()
+                self.eventQueuesJoin()
                 self.sched.run_handler_lock.acquire()
                 if (not self.merge_client.build_sets and
-                    self.sched.trigger_event_queue.empty() and
-                    self.sched.result_event_queue.empty() and
-                    self.fake_gerrit.event_queue.empty() and
+                    all(self.eventQueuesEmpty()) and
                     self.haveAllBuildsReported() and
                     self.areAllBuildsWaiting()):
                     self.sched.run_handler_lock.release()

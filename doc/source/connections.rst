@@ -73,6 +73,10 @@ Create a connection with GitHub.
   See `Securing your webhooks
   <https://developer.github.com/webhooks/securing/>`_.
 
+**git_ssh**
+  Optional. Boolean value (``true`` or ``false``) that determines whether to
+  use SSH for git access. If unspecified or ``false``, access git via HTTPS.
+
 SMTP
 ----
 

@@ -2,8 +2,9 @@
 
 Name:             zuul
 Summary:          GoodData customized Zuul gatekeeper
+Epoch:            1
 Version:          2.1.1
-Release:          2.gdc
+Release:          3.gdc
 
 Vendor:           GoodData
 Group:            GoodData/Tools
@@ -38,6 +39,13 @@ GoodData customized Zuul gatekeeper
 %attr(0755, root, root) %{install_dir}/lib64
 
 %changelog
+* Wed Oct 26 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-3.gdc
+- Support to trigger jobs on github pull request comments
+- GitHub change support for patchset
+- Link to pull request in job descriptions
+- Built on top of:
+  git fetch https://review.openstack.org/openstack-infra/zuul refs/changes/03/239203/3 && git checkout FETCH_HEAD
+
 * Wed Sep 14 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1.dev76-1.gdc
 - Adding GitHub tests
 - Base versioning scheme on `zuul --version'

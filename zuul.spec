@@ -4,7 +4,7 @@ Name:             zuul
 Summary:          GoodData customized Zuul gatekeeper
 Epoch:            1
 Version:          2.1.1
-Release:          4.gdc
+Release:          5.gdc
 
 Vendor:           GoodData
 Group:            GoodData/Tools
@@ -39,11 +39,16 @@ GoodData customized Zuul gatekeeper
 %attr(0755, root, root) %{install_dir}/lib64
 
 %changelog
+* Wed Oct 26 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-5.gdc
+- Fix the construction of messages in the reporter
+- Built on top of:
+  git fetch https://review.openstack.org/openstack-infra/zuul refs/changes/03/239203/5 && git checkout FETCH_HEAD
+
 * Wed Oct 26 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-4.gdc
 - Fix the pr-comment handling
 - More debugging output
 - Built on top of:
-  https://review.openstack.org/gitweb?p=openstack-infra%2Fzuul.git;a=commitdiff;h=7992b24a914158b0a40bf7a206a5e61947f03b70
+  git fetch https://review.openstack.org/openstack-infra/zuul refs/changes/03/239203/4 && git checkout FETCH_HEAD
 
 * Wed Oct 26 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-3.gdc
 - Support to trigger jobs on github pull request comments

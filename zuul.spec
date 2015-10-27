@@ -4,7 +4,7 @@ Name:             zuul
 Summary:          GoodData customized Zuul gatekeeper
 Epoch:            1
 Version:          2.1.1
-Release:          8.gdc
+Release:          9.gdc
 
 Vendor:           GoodData
 Group:            GoodData/Tools
@@ -39,6 +39,13 @@ GoodData customized Zuul gatekeeper
 %attr(0755, root, root) %{install_dir}/lib64
 
 %changelog
+* Wed Oct 27 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-9.gdc
+- Make the github statuses configurable, with sane defaults
+- Improve the github statuses & comment testing
+- Fix github-ssh documentation
+- Built on top of:
+  git fetch https://github.com/gooddata/zuul refs/heads/not-in-review/github-integration/1
+
 * Wed Oct 26 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-8.gdc
 - Set Github statuses
 - Built on top of:

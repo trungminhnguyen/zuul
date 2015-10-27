@@ -4,7 +4,7 @@ Name:             zuul
 Summary:          GoodData customized Zuul gatekeeper
 Epoch:            1
 Version:          2.1.1
-Release:          7.gdc
+Release:          8.gdc
 
 Vendor:           GoodData
 Group:            GoodData/Tools
@@ -39,6 +39,11 @@ GoodData customized Zuul gatekeeper
 %attr(0755, root, root) %{install_dir}/lib64
 
 %changelog
+* Wed Oct 26 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-8.gdc
+- Set Github statuses
+- Built on top of:
+  git fetch https://review.openstack.org/openstack-infra/zuul refs/changes/03/239303/6 && git checkout FETCH_HEAD
+
 * Wed Oct 26 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-7.gdc
 - Fix SSH URL
 - Built on top of:

@@ -4,7 +4,7 @@ Name:             zuul
 Summary:          GoodData customized Zuul gatekeeper
 Epoch:            1
 Version:          2.1.1
-Release:          10.gdc
+Release:          11.gdc
 
 Vendor:           GoodData
 Group:            GoodData/Tools
@@ -39,6 +39,12 @@ GoodData customized Zuul gatekeeper
 %attr(0755, root, root) %{install_dir}/lib64
 
 %changelog
+* Wed Oct 29 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-11.gdc
+- Fix minor test glitch
+- Update authorship of commits
+- Built on top of:
+  git fetch https://github.com/gooddata/zuul refs/heads/not-in-review/github-integration/3
+
 * Wed Oct 27 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-10.gdc
 - Enforce the config schema of the github reporter
 - Built on top of:

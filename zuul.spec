@@ -4,7 +4,7 @@ Name:             zuul
 Summary:          GoodData customized Zuul gatekeeper
 Epoch:            1
 Version:          2.1.1
-Release:          12.gdc
+Release:          13.gdc
 
 Vendor:           GoodData
 Group:            GoodData/Tools
@@ -45,6 +45,11 @@ GoodData customized Zuul gatekeeper
 %attr(0755, root, root) %{install_dir}/lib64
 
 %changelog
+* Wed Nov 03 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-13.gdc
+- github3.py >=1.0.0 has different API, fix a bug resulting from such incompatibility
+- Built on top of:
+  git fetch https://github.com/gooddata/zuul refs/heads/not-in-review/github-integration/5
+
 * Wed Nov 03 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-12.gdc
 - Support merging pull requests from github reporter
 - Depend on pre-release version on github3.py 1.0.0a2 (fixes merging PRs)

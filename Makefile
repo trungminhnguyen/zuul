@@ -8,6 +8,7 @@ PIP_DEPS_DIR := pip-deps
 PIP_DOWNLOAD := pip install --download $(PIP_DEPS_DIR)
 PWD := $(shell pwd)
 PIP_INSTALL_FROM_CACHE := pip install --no-index --find-links file://$(PWD)/$(PIP_DEPS_DIR)
+WEBAPP_DIR := etc/status
 
 # Create source archive including zuul and pip dependencies
 sources:
@@ -17,7 +18,8 @@ sources:
 	$(VENV_ACTIVATE) && $(PIP_DOWNLOAD) pip
 	$(VENV_ACTIVATE) && $(PIP_INSTALL_FROM_CACHE) --upgrade pip # fails with old pip
 	$(VENV_ACTIVATE) && $(PIP_DOWNLOAD) --requirement requirements.txt
-	tar rvf $(SOURCES) $(PIP_DEPS_DIR)
+	./etc/status/fetch-dependencies.sh # web assets fetch
+	tar rvf $(SOURCES) $(PIP_DEPS_DIR) $(WEBAPP_DIR)
 
 # Build zuul bundle from zuul and it's dependencies
 build:
@@ -32,6 +34,7 @@ build:
 install:
 	install -d -m 755 '$(DESTDIR)'
 	cp -a $(VENV_DIR)/* '$(DESTDIR)'
+	cp -a $(WEBAPP_DIR) '$(DESTDIR)'
 
 clean:
 	rm -rf $(SOURCES) $(PIP_DEPS_DIR) $(VENV_DIR)

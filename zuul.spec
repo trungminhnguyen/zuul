@@ -4,7 +4,7 @@ Name:             zuul
 Summary:          GoodData customized Zuul gatekeeper
 Epoch:            1
 Version:          2.1.1
-Release:          14.1.gdc
+Release:          15.gdc
 
 Vendor:           GoodData
 Group:            GoodData/Tools
@@ -43,8 +43,12 @@ GoodData customized Zuul gatekeeper
 %attr(0755, root, root) %{install_dir}/include
 %attr(0755, root, root) %{install_dir}/lib
 %attr(0755, root, root) %{install_dir}/lib64
+%attr(0755, root, root) %{install_dir}/status
 
 %changelog
+* Thu Nov 10 2015 Yury Tsarev <yury.tsarev@gooddata.com> 2.1.1-15.gdc
+- Include web assets into package
+
 * Wed Nov 03 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-14.1.gdc
 - Fix the backward compatibility
 - Fix the layout validation tool until upstream does

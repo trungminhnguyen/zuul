@@ -214,7 +214,8 @@ class Scheduler(threading.Thread):
         self.stopConnections()
         self.wake_event.set()
 
-    def testConfig(self, config_path):
+    def testConfig(self, config_path, connections):
+        self.connections = connections
         return self._parseConfig(config_path)
 
     def _parseSkipIf(self, config_job):

@@ -96,8 +96,10 @@ class GithubReporter(BaseReporter):
 
 
 def getSchema():
-    github_reporter = v.Any(
-        v.Schema({'status': bool,
-                  'comment': bool,
-                  'merge': bool}))
+    github_reporter = v.Schema({
+        'status': bool,
+        'commit_status': bool,
+        'comment': bool,
+        'merge': bool
+    })
     return github_reporter

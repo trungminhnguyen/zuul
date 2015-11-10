@@ -4,7 +4,7 @@ Name:             zuul
 Summary:          GoodData customized Zuul gatekeeper
 Epoch:            1
 Version:          2.1.1
-Release:          14.gdc
+Release:          14.1.gdc
 
 Vendor:           GoodData
 Group:            GoodData/Tools
@@ -45,6 +45,10 @@ GoodData customized Zuul gatekeeper
 %attr(0755, root, root) %{install_dir}/lib64
 
 %changelog
+* Wed Nov 03 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-14.1.gdc
+- Fix the backward compatibility
+- Fix the layout validation tool until upstream does
+
 * Wed Nov 03 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-14.gdc
 - Rebase onto upstream changes
 - Change of the github reporter defaults

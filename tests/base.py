@@ -1131,7 +1131,6 @@ class ZuulTestCase(BaseTestCase):
             shutil.rmtree(self.test_root)
         os.makedirs(self.test_root)
         os.makedirs(self.upstream_root)
-        os.makedirs(self.git_root)
 
         # Make per test copy of Configuration.
         self.setup_config()

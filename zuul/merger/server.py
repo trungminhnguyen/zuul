@@ -14,7 +14,6 @@
 
 import json
 import logging
-import os
 import threading
 import traceback
 
@@ -45,21 +44,8 @@ class MergeServer(object):
         else:
             merge_name = None
 
-        for connection_name, connection in connections.items():
-            sshkey = connection.connection_config.get('sshkey')
-            if sshkey:
-                self._makeSSHWrapper(sshkey, merge_root, connection_name)
-
-        self.merger = merger.Merger(merge_root, merge_email, merge_name)
-
-    def _makeSSHWrapper(self, key, merge_root, connection_name='default'):
-        wrapper_name = '.ssh_wrapper_%s' % connection_name
-        name = os.path.join(merge_root, wrapper_name)
-        fd = open(name, 'w')
-        fd.write('#!/bin/bash\n')
-        fd.write('ssh -i %s $@\n' % key)
-        fd.close()
-        os.chmod(name, 0755)
+        self.merger = merger.Merger(merge_root, connections, merge_email,
+                                    merge_name)
 
     def start(self):
         self._running = True

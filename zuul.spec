@@ -4,7 +4,7 @@ Name:             zuul
 Summary:          GoodData customized Zuul gatekeeper
 Epoch:            1
 Version:          2.1.1
-Release:          16.gdc
+Release:          17.gdc
 
 Vendor:           GoodData
 Group:            GoodData/Tools
@@ -46,7 +46,10 @@ GoodData customized Zuul gatekeeper
 %attr(0755, root, root) %{install_dir}/status
 
 %changelog
-* Thu Nov 13 2015 Yury Tsarev <yury.tsarev@gooddata.com> 2.1.1-16.gdc
+* Thu Nov 13 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-17.gdc
+- Respect PPID umask when daemonizing
+
+* Thu Nov 13 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-16.gdc
 - Package 2.1.1-15 was mistakenly built on top of 2.1.1-14 instead of
   2.1.1-14.1. Rebuild with the correct content.
 

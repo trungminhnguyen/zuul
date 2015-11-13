@@ -4,7 +4,7 @@ Name:             zuul
 Summary:          GoodData customized Zuul gatekeeper
 Epoch:            1
 Version:          2.1.1
-Release:          17.gdc
+Release:          18.gdc
 
 Vendor:           GoodData
 Group:            GoodData/Tools
@@ -46,6 +46,10 @@ GoodData customized Zuul gatekeeper
 %attr(0755, root, root) %{install_dir}/status
 
 %changelog
+* Thu Nov 13 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-18.gdc
+- Fix zuul-merger not creating the git_dir on start, which fails on new deployments
+- Sync with upstream changes (from now only merges into this repo, no rebases)
+
 * Thu Nov 13 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-17.gdc
 - Respect PPID umask when daemonizing
 

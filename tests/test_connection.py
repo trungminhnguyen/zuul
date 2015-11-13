@@ -37,7 +37,7 @@ class TestGitHubConnection(testtools.TestCase):
 
 
 class TestConnections(ZuulTestCase):
-    def setup_config(self, config_file='zuul-connections.conf'):
+    def setup_config(self, config_file='zuul-connections-same-gerrit.conf'):
         super(TestConnections, self).setup_config(config_file)
 
     def test_multiple_connections(self):
@@ -65,3 +65,29 @@ class TestConnections(ZuulTestCase):
         self.assertEqual(B.patchsets[-1]['approvals'][0]['value'], '-1')
         self.assertEqual(B.patchsets[-1]['approvals'][0]['by']['username'],
                          'civoter')
+
+
+class TestMultipleGerrits(ZuulTestCase):
+    def setup_config(self,
+                     config_file='zuul-connections-multiple-gerrits.conf'):
+        super(TestMultipleGerrits, self).setup_config(config_file)
+        self.config.set(
+            'zuul', 'layout_config',
+            'layout-connections-multiple-gerrits.yaml')
+
+    def test_multiple_project_separate_gerrits(self):
+        self.worker.hold_jobs_in_build = True
+
+        A = self.fake_another_gerrit.addFakeChange(
+            'org/project', 'master', 'A')
+        self.fake_another_gerrit.addEvent(A.getPatchsetCreatedEvent(1))
+
+        self.waitUntilSettled()
+
+        self.assertEqual(1, len(self.builds))
+        self.assertEqual('project-another-gerrit', self.builds[0].name)
+        self.assertTrue(self.job_has_changes(self.builds[0], A))
+
+        self.worker.hold_jobs_in_build = False
+        self.worker.release()
+        self.waitUntilSettled()

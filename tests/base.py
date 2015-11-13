@@ -1290,8 +1290,7 @@ class ZuulTestCase(BaseTestCase):
         if 'gerrit' in self.config.sections():
             self.gerrit_changes_dbs['gerrit'] = {}
             self.gerrit_queues_dbs['gerrit'] = Queue.Queue()
-            self.event_queues.append(
-                self.gerrit_queues_dbs['gerrit'])
+            self.event_queues.append(self.gerrit_queues_dbs['gerrit'])
             self.connections['gerrit'] = FakeGerritConnection(
                 '_legacy_gerrit', dict(self.config.items('gerrit')),
                 changes_db=self.gerrit_changes_dbs['gerrit'],

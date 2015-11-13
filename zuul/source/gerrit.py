@@ -15,6 +15,7 @@
 import logging
 import re
 import time
+from zuul import exceptions
 from zuul.model import Change, Ref, NullChange
 from zuul.source import BaseSource
 
@@ -225,8 +226,7 @@ class GerritSource(BaseSource):
             change.patchset = data['currentPatchSet']['number']
 
         if 'project' not in data:
-            raise Exception("Change %s,%s not found" % (change.number,
-                                                        change.patchset))
+            raise exceptions.ChangeNotFound(change.number, change.patchset)
         # If updated changed came as a dependent on
         # and its project is not defined,
         # then create a 'foreign' project for it in layout

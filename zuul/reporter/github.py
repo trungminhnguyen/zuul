@@ -35,10 +35,10 @@ class GithubReporter(BaseReporter):
 
     def postConfig(self):
         github_status_values = {
-            self._action_start: 'pending',
-            self._action_success: 'success',
-            self._action_failure: 'failure',
-            self._action_merge_failure: 'failure'
+            'start': 'pending',
+            'success': 'success',
+            'failure': 'failure',
+            'failure': 'failure'
         }
         self._github_status_value = github_status_values[self._action]
 

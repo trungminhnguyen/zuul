@@ -24,11 +24,6 @@ class BaseReporter(object):
     Defines the exact public methods that must be supplied.
     """
 
-    _action_start = 'start'
-    _action_success = 'success'
-    _action_failure = 'failure'
-    _action_merge_failure = 'merge-failure'
-
     def __init__(self, reporter_config={}, sched=None, connection=None):
         self.reporter_config = reporter_config
         self.sched = sched
@@ -36,17 +31,7 @@ class BaseReporter(object):
         self._action = None
 
     def setAction(self, action):
-        if action not in [self._action_start, self._action_success,
-                          self._action_failure, self._action_merge_failure]:
-            raise ValueError('Unknown reporter action: %s' % action)
         self._action = action
-        format_methods = {
-            self._action_start: '_formatItemReportStart',
-            self._action_success: '_formatItemReportSuccess',
-            self._action_failure: '_formatItemReportFailure',
-            self._action_merge_failure: '_formatItemReportMergeFailure'
-        }
-        self._format_method = getattr(self, format_methods[self._action])
 
     def stop(self):
         """Stop the reporter."""
@@ -66,10 +51,19 @@ class BaseReporter(object):
     def postConfig(self):
         """Run tasks after configuration is reloaded"""
 
+    def _getFormatter(self):
+        format_methods = {
+            'start': self._formatItemReportStart,
+            'success': self._formatItemReportSuccess,
+            'failure': self._formatItemReportFailure,
+            'merge-failure': self._formatItemReportMergeFailure
+        }
+        return format_methods[self._action]
+
     def _formatItemReport(self, pipeline, item):
         """Format a report from the given items. Usually to provide results to
         a reporter taking free-form text."""
-        ret = self._format_method(pipeline, item)
+        ret = self._getFormatter()(pipeline, item)
 
         if pipeline.footer_message:
             ret += '\n' + pipeline.footer_message

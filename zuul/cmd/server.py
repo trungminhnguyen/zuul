@@ -91,8 +91,9 @@ class Server(zuul.cmd.ZuulApp):
         logging.basicConfig(level=logging.DEBUG)
         self.sched = zuul.scheduler.Scheduler(self.config)
         self.configure_connections()
-        layout = self.sched.testConfig(
-            self.config.get('zuul', 'layout_config'), self.connections)
+        layout = self.sched.testConfig(self.config.get('zuul',
+                                                       'layout_config'),
+                                       self.connections)
         if not job_list_path:
             return False
 

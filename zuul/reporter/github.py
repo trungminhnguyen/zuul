@@ -28,8 +28,7 @@ class GithubReporter(BaseReporter):
         super(GithubReporter, self).__init__(
             reporter_config, sched, connection)
         self._github_status_value = None
-        self._set_commit_status = self.reporter_config.get(
-            'status', self.reporter_config.get('commit_status', False))
+        self._set_commit_status = self.reporter_config.get('status', False)
         self._create_comment = self.reporter_config.get('comment', False)
         self._merge = self.reporter_config.get('merge', False)
 
@@ -98,7 +97,6 @@ class GithubReporter(BaseReporter):
 def getSchema():
     github_reporter = v.Schema({
         'status': bool,
-        'commit_status': bool,
         'comment': bool,
         'merge': bool
     })

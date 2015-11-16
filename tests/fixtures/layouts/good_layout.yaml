@@ -29,6 +29,7 @@ pipelines:
       review_gerrit:
         - event: ref-updated
           ref: ^(?!refs/).*$
+          ignore-deletes: True
 
   - name: gate
     manager: DependentPipelineManager

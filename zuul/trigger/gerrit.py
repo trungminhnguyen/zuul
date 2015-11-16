@@ -46,6 +46,7 @@ class GerritTrigger(BaseTrigger):
             usernames = toList(trigger.get('username'))
             if not usernames:
                 usernames = toList(trigger.get('username_filter'))
+            ignore_deletes = trigger.get('ignore-deletes', True)
             f = EventFilter(
                 trigger=self,
                 types=toList(trigger['event']),
@@ -61,6 +62,7 @@ class GerritTrigger(BaseTrigger):
                 reject_approvals=toList(
                     trigger.get('reject-approval')
                 ),
+                ignore_deletes=ignore_deletes
             )
             efilters.append(f)
 
@@ -106,6 +108,7 @@ def getSchema():
         'username': toList(str),
         'branch': toList(str),
         'ref': toList(str),
+        'ignore-deletes': bool,
         'approval': toList(variable_dict),
         'require-approval': toList(approval),
         'reject-approval': toList(approval),

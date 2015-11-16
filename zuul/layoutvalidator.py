@@ -67,6 +67,8 @@ class LayoutSchema(object):
                 'footer-message': str,
                 'dequeue-on-new-patchset': bool,
                 'ignore-dependencies': bool,
+                'disable-after-consecutive-failures':
+                    v.All(int, v.Range(min=1)),
                 'window': window,
                 'window-floor': window_floor,
                 'window-increase-type': window_type,
@@ -262,7 +264,8 @@ class LayoutSchema(object):
         # etc...
         self.pipeline['trigger'] = v.Required(
             self.getDriverSchema('trigger', connections))
-        for action in ['start', 'success', 'failure', 'merge-failure']:
+        for action in ['start', 'success', 'failure', 'merge-failure',
+                       'disabled']:
             self.pipeline[action] = self.getDriverSchema('reporter',
                                                          connections)
 

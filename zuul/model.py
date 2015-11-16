@@ -22,6 +22,8 @@ OrderedDict = extras.try_imports(['collections.OrderedDict',
                                   'ordereddict.OrderedDict'])
 
 
+EMPTY_GIT_REF = '0' * 40  # git sha of all zeros, used during creates/deletes
+
 MERGER_MERGE = 1          # "git merge"
 MERGER_MERGE_RESOLVE = 2  # "git merge -s resolve"
 MERGER_CHERRY_PICK = 3    # "git cherry-pick"
@@ -83,6 +85,10 @@ class Pipeline(object):
         self.success_actions = []
         self.failure_actions = []
         self.merge_failure_actions = []
+        self.disabled_actions = []
+        self.disable_at = None
+        self._consecutive_failures = 0
+        self._disabled = False
         self.window = None
         self.window_floor = None
         self.window_increase_type = None
@@ -1133,7 +1139,7 @@ class EventFilter(BaseFilter):
     def __init__(self, trigger, types=[], branches=[], refs=[],
                  event_approvals={}, comments=[], emails=[], usernames=[],
                  timespecs=[], required_approvals=[], reject_approvals=[],
-                 pipelines=[]):
+                 pipelines=[], ignore_deletes=True):
         super(EventFilter, self).__init__(
             required_approvals=required_approvals,
             reject_approvals=reject_approvals)
@@ -1154,6 +1160,7 @@ class EventFilter(BaseFilter):
         self.pipelines = [re.compile(x) for x in pipelines]
         self.event_approvals = event_approvals
         self.timespecs = timespecs
+        self.ignore_deletes = ignore_deletes
 
     def __repr__(self):
         ret = '<EventFilter'
@@ -1166,6 +1173,8 @@ class EventFilter(BaseFilter):
             ret += ' branches: %s' % ', '.join(self._branches)
         if self._refs:
             ret += ' refs: %s' % ', '.join(self._refs)
+        if self.ignore_deletes:
+            ret += ' ignore_deletes: %s' % self.ignore_deletes
         if self.event_approvals:
             ret += ' event_approvals: %s' % ', '.join(
                 ['%s:%s' % a for a in self.event_approvals.items()])
@@ -1219,6 +1228,10 @@ class EventFilter(BaseFilter):
                 if ref.match(event.ref):
                     matches_ref = True
         if self.refs and not matches_ref:
+            return False
+        if self.ignore_deletes and event.newrev == EMPTY_GIT_REF:
+            # If the updated ref has an empty git sha (all 0s),
+            # then the ref is being deleted
             return False
 
         # comments are ORed

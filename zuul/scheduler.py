@@ -209,7 +209,8 @@ class Scheduler(threading.Thread):
             'start': 'start_actions',
             'success': 'success_actions',
             'failure': 'failure_actions',
-            'merge-failure': 'merge_failure_actions'
+            'merge-failure': 'merge_failure_actions',
+            'disabled': 'disabled_actions',
         }
 
     def stop(self):
@@ -387,6 +388,9 @@ class Scheduler(threading.Thread):
             # If merge-failure actions aren't explicit, use the failure actions
             if not pipeline.merge_failure_actions:
                 pipeline.merge_failure_actions = pipeline.failure_actions
+
+            pipeline.disable_at = conf_pipeline.get(
+                'disable-after-consecutive-failures', None)
 
             pipeline.window = conf_pipeline.get('window', 20)
             pipeline.window_floor = conf_pipeline.get('window-floor', 3)
@@ -1142,6 +1146,8 @@ class BasePipelineManager(object):
         self.log.info("    %s" % self.pipeline.failure_actions)
         self.log.info("  On merge-failure:")
         self.log.info("    %s" % self.pipeline.merge_failure_actions)
+        self.log.info("  When disabled:")
+        self.log.info("    %s" % self.pipeline.disabled_actions)
 
     def getSubmitAllowNeeds(self):
         # Get a list of code review labels that are allowed to be
@@ -1183,16 +1189,17 @@ class BasePipelineManager(object):
         return False
 
     def reportStart(self, item):
-        try:
-            self.log.info("Reporting start, action %s item %s" %
-                          (self.pipeline.start_actions, item))
-            ret = self.sendReport(self.pipeline.start_actions,
-                                  self.pipeline.source, item)
-            if ret:
-                self.log.error("Reporting item start %s received: %s" %
-                               (item, ret))
-        except:
-            self.log.exception("Exception while reporting start:")
+        if not self.pipeline._disabled:
+            try:
+                self.log.info("Reporting start, action %s item %s" %
+                              (self.pipeline.start_actions, item))
+                ret = self.sendReport(self.pipeline.start_actions,
+                                      self.pipeline.source, item)
+                if ret:
+                    self.log.error("Reporting item start %s received: %s" %
+                                   (item, ret))
+            except:
+                self.log.exception("Exception while reporting start:")
 
     def sendReport(self, action_reporters, source, item,
                    message=None):
@@ -1644,12 +1651,22 @@ class BasePipelineManager(object):
             self.log.debug("success %s" % (self.pipeline.success_actions))
             actions = self.pipeline.success_actions
             item.setReportedResult('SUCCESS')
+            self.pipeline._consecutive_failures = 0
         elif not self.pipeline.didMergerSucceed(item):
             actions = self.pipeline.merge_failure_actions
             item.setReportedResult('MERGER_FAILURE')
         else:
             actions = self.pipeline.failure_actions
             item.setReportedResult('FAILURE')
+            self.pipeline._consecutive_failures += 1
+        if self.pipeline._disabled:
+            actions = self.pipeline.disabled_actions
+        # Check here if we should disable so that we only use the disabled
+        # reporters /after/ the last disable_at failure is still reported as
+        # normal.
+        if (self.pipeline.disable_at and not self.pipeline._disabled and
+            self.pipeline._consecutive_failures >= self.pipeline.disable_at):
+            self.pipeline._disabled = True
         if actions:
             try:
                 self.log.info("Reporting item %s, actions: %s" %

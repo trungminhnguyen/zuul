@@ -56,7 +56,8 @@ class BaseReporter(object):
             'start': self._formatItemReportStart,
             'success': self._formatItemReportSuccess,
             'failure': self._formatItemReportFailure,
-            'merge-failure': self._formatItemReportMergeFailure
+            'merge-failure': self._formatItemReportMergeFailure,
+            'disabled': self._formatItemReportDisabled
         }
         return format_methods[self._action]
 
@@ -90,6 +91,14 @@ class BaseReporter(object):
 
     def _formatItemReportMergeFailure(self, pipeline, item):
         return pipeline.merge_failure_message
+
+    def _formatItemReportDisabled(self, pipeline, item):
+        if item.current_build_set.result == 'SUCCESS':
+            return self._formatItemReportSuccess(pipeline, item)
+        elif item.current_build_set.result == 'FAILURE':
+            return self._formatItemReportFailure(pipeline, item)
+        else:
+            return self._formatItemReport(pipeline, item)
 
     def _formatItemReportJobs(self, pipeline, item):
         # Return the list of jobs portion of the report

@@ -4,7 +4,7 @@ Name:             zuul
 Summary:          GoodData customized Zuul gatekeeper
 Epoch:            1
 Version:          2.1.1
-Release:          19.gdc
+Release:          20.gdc
 
 Vendor:           GoodData
 Group:            GoodData/Tools
@@ -51,6 +51,9 @@ if [ -d /var/lib/zuul/git ]; then
 fi
 
 %changelog
+* Thu Nov 18 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-20.gdc
+- Fix permissions of the git dir in post-install. Related to the umask fix in 2.1.1-17.
+
 * Thu Nov 16 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-19.gdc
 - Sync with upstream changes. Creating the zuul-merger dir incorporated, supersedes 7cf9ebd
 - Revert the backwards compatibility changes for the configuration options

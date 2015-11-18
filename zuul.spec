@@ -45,11 +45,6 @@ GoodData customized Zuul gatekeeper
 %attr(0755, root, root) %{install_dir}/lib64
 %attr(0755, root, root) %{install_dir}/status
 
-%post
-if [ -d /var/lib/zuul/git ]; then
-  find /var/lib/zuul/git -exec chmod go-w '{}' \; || :
-fi
-
 %changelog
 * Thu Nov 18 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-20.gdc
 - Fix permissions of the git dir in post-install. Related to the umask fix in 2.1.1-17.

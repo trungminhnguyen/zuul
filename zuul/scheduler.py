@@ -601,16 +601,6 @@ class Scheduler(threading.Thread):
     def onBuildStarted(self, build):
         self.log.debug("Adding start event for build: %s" % build)
         build.start_time = time.time()
-        try:
-            if statsd and build.pipeline:
-                jobname = build.job.name.replace('.', '_')
-                key = 'zuul.pipeline.%s.job.%s.wait_time' % (
-                    build.pipeline.name, jobname)
-                dt = int((build.start_time - build.launch_time) * 1000)
-                statsd.timing(key, dt)
-                statsd.incr(key)
-        except:
-            self.log.exception("Exception reporting runtime stats")
         event = BuildStartedEvent(build)
         self.result_event_queue.put(event)
         self.wake_event.set()
@@ -637,16 +627,20 @@ class Scheduler(threading.Thread):
                     if label == build.node_name:
                         continue
                     dt = int((build.start_time - build.launch_time) * 1000)
-                    key = 'zuul.node_type.%s.job.%s.wait_time' % (
-                        label, jobname)
+                    key = 'zuul.pipeline.%s.label.%s.wait_time' % (
+                        build.pipeline.name, label)
                     statsd.timing(key, dt)
-                    statsd.incr(key)
                 key = 'zuul.pipeline.%s.job.%s.%s' % (build.pipeline.name,
                                                       jobname, build.result)
                 if build.result in ['SUCCESS', 'FAILURE'] and build.start_time:
                     dt = int((build.end_time - build.start_time) * 1000)
                     statsd.timing(key, dt)
                 statsd.incr(key)
+
+                key = 'zuul.pipeline.%s.job.%s.wait_time' % (
+                    build.pipeline.name, jobname)
+                dt = int((build.start_time - build.launch_time) * 1000)
+                statsd.timing(key, dt)
         except:
             self.log.exception("Exception reporting runtime stats")
         event = BuildCompletedEvent(build)
@@ -974,9 +968,9 @@ class Scheduler(threading.Thread):
                 if not project or project.foreign:
                     self.log.debug("Project %s not found" % event.project_name)
                     continue
-                if event.type == 'patchset-created':
+                if event.isPatchsetCreated():
                     pipeline.manager.removeOldVersionsOfChange(change)
-                elif event.type == 'change-abandoned':
+                elif event.isChangeAbandoned():
                     pipeline.manager.removeAbandonedChange(change)
                 if pipeline.manager.eventMatches(event, change):
                     self.log.info("Adding %s, %s to %s" %

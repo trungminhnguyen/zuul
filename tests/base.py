@@ -476,15 +476,18 @@ class GithubChangeReference(git.Reference):
 class FakeGithubPullRequest(object):
 
     def __init__(self, github, number, project, branch,
-                 upstream_root, number_of_commits=1):
+                 subject, upstream_root, number_of_commits=1):
         """Creates a new PR with several commits.
         Sends an event about opened PR."""
         self.github = github
         self.number = number
         self.project = project
         self.branch = branch
+        self.subject = subject
+        self.number_of_commits = 0
         self.upstream_root = upstream_root
         self.comments = []
+        self.labels = []
         self.statuses = {}
         self.updated_at = None
         self.head_sha = None
@@ -537,6 +540,32 @@ class FakeGithubPullRequest(object):
         }
         return (name, data)
 
+    def addLabel(self, name):
+        if name not in self.labels:
+            self.labels.append(name)
+        return self._getLabelEvent(name, 'labeled')
+
+    def removeLabel(self, name):
+        if name in self.labels:
+            self.labels.remove(name)
+            return self._getLabelEvent(name, 'unlabeled')
+
+    def _getLabelEvent(self, label, action):
+        name = 'issues'
+        data = {
+            'action': action,
+            'issue': {
+                'number': self.number
+            },
+            'label': {
+                'name': label
+            },
+            'repository': {
+                'full_name': self.project
+            }
+        }
+        return (name, data)
+
     def _getRepo(self):
         repo_path = os.path.join(self.upstream_root, self.project)
         return git.Repo(repo_path)
@@ -550,13 +579,15 @@ class FakeGithubPullRequest(object):
         repo = self._getRepo()
         ref = repo.references[self._getPRReference()]
         if reset:
+            self.number_of_commits = 0
             ref.set_object('refs/tags/init')
+        self.number_of_commits += 1
         repo.head.reference = ref
         zuul.merger.merger.reset_repo_to_head(repo)
         repo.git.clean('-x', '-f', '-d')
 
         fn = '%s-%s' % (self.branch.replace('/', '_'), self.number)
-        msg = 'test-%s' % self.number
+        msg = self.subject + '-' + str(self.number_of_commits)
         fn = os.path.join(repo.working_dir, fn)
         f = open(fn, 'w')
         with open(fn, 'w') as f:
@@ -624,10 +655,10 @@ class FakeGithubConnection(zuul.connection.github.GithubConnection):
         self.upstream_root = upstream_root
         self.merge_failure = False
 
-    def openFakePullRequest(self, project, branch):
+    def openFakePullRequest(self, project, branch, subject):
         self.pr_number += 1
         pull_request = FakeGithubPullRequest(
-            self, self.pr_number, project, branch, self.upstream_root)
+            self, self.pr_number, project, branch, subject, self.upstream_root)
         self.pull_requests.append(pull_request)
         return pull_request
 
@@ -713,6 +744,14 @@ class FakeGithubConnection(zuul.connection.github.GithubConnection):
             if (pr_owner == owner and pr_project == project and
                 pr.head_sha == sha):
                 pr.setStatus(state, url, description, context)
+
+    def labelPull(self, owner, project, pr_number, label):
+        pull_request = self.pull_requests[pr_number - 1]
+        pull_request.addLabel(label)
+
+    def unlabelPull(self, owner, project, pr_number, label):
+        pull_request = self.pull_requests[pr_number - 1]
+        pull_request.removeLabel(label)
 
 
 class BuildHistory(object):
@@ -1158,7 +1197,9 @@ class ZuulTestCase(BaseTestCase):
         self.init_repo("org/no-jobs-project")
 
         self.statsd = FakeStatsd()
-        os.environ['STATSD_HOST'] = 'localhost'
+        # note, use 127.0.0.1 rather than localhost to avoid getting ipv6
+        # see: https://github.com/jsocol/pystatsd/issues/61
+        os.environ['STATSD_HOST'] = '127.0.0.1'
         os.environ['STATSD_PORT'] = str(self.statsd.port)
         self.statsd.start()
         # the statsd client object is configured in the statsd module import

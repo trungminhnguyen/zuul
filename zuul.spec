@@ -4,7 +4,7 @@ Name:             zuul
 Summary:          GoodData customized Zuul gatekeeper
 Epoch:            1
 Version:          2.1.1
-Release:          20.gdc
+Release:          21.gdc
 
 Vendor:           GoodData
 Group:            GoodData/Tools
@@ -46,6 +46,12 @@ GoodData customized Zuul gatekeeper
 %attr(0755, root, root) %{install_dir}/status
 
 %changelog
+* Thu Nov 19 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-21.gdc
+- Sync with upstream changes.
+- Add label support for github trigger and reporter.
+- Implement dependent pipelines for github.
+- Enable the dequeue mechanism.
+
 * Thu Nov 18 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-20.gdc
 - Fix permissions of the git dir in post-install. Related to the umask fix in 2.1.1-17.
 

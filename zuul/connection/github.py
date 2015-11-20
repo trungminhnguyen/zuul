@@ -112,6 +112,12 @@ class GithubWebhookListener():
             event.type = 'pr-close'
         elif action == 'reopened':
             event.type = 'pr-reopen'
+        elif action == 'labeled':
+            event.type = 'pr-label'
+            event.label = body['label']['name']
+        elif action == 'unlabeled':
+            event.type = 'pr-label'
+            event.label = '-' + body['label']['name']
         else:
             return None
 
@@ -130,23 +136,6 @@ class GithubWebhookListener():
         event = self._pull_request_to_event(pr_body)
         event.comment = body.get('comment').get('body')
         event.type = 'pr-comment'
-        return event
-
-    def _event_issues(self, request):
-        """Handles pull reqeust labels"""
-        body = request.json_body
-        action = body.get('action')
-        if action not in ['labeled', 'unlabeled']:
-            return
-        pr_body = self._issue_to_pull_request(body)
-        if pr_body is None:
-            return
-
-        event = self._pull_request_to_event(pr_body)
-        event.label = body['label']['name']
-        if action == 'unlabeled':
-            event.label = '-' + event.label
-        event.type = 'pr-label'
         return event
 
     def _issue_to_pull_request(self, body):

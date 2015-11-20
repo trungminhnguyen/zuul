@@ -543,25 +543,34 @@ class FakeGithubPullRequest(object):
     def addLabel(self, name):
         if name not in self.labels:
             self.labels.append(name)
-        return self._getLabelEvent(name, 'labeled')
+            self._updateTimeStamp()
+            return self._getLabelEvent(name, 'labeled')
 
     def removeLabel(self, name):
         if name in self.labels:
             self.labels.remove(name)
+            self._updateTimeStamp()
             return self._getLabelEvent(name, 'unlabeled')
 
     def _getLabelEvent(self, label, action):
-        name = 'issues'
+        name = 'pull_request'
         data = {
             'action': action,
-            'issue': {
-                'number': self.number
+            'pull_request': {
+                'number': self.number,
+                'updated_at': self.updated_at,
+                'base': {
+                    'ref': self.branch,
+                    'repo': {
+                        'full_name': self.project
+                    }
+                },
+                'head': {
+                    'sha': self.head_sha
+                }
             },
             'label': {
                 'name': label
-            },
-            'repository': {
-                'full_name': self.project
             }
         }
         return (name, data)

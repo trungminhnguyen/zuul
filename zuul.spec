@@ -4,7 +4,7 @@ Name:             zuul
 Summary:          GoodData customized Zuul gatekeeper
 Epoch:            1
 Version:          2.1.1
-Release:          22.gdc
+Release:          22%{?dist}.gdc
 
 Vendor:           GoodData
 Group:            GoodData/Tools

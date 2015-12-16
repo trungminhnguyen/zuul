@@ -4,7 +4,7 @@ Name:             zuul
 Summary:          GoodData customized Zuul gatekeeper
 Epoch:            1
 Version:          2.1.1
-Release:          22%{?dist}.gdc
+Release:          23%{?dist}.gdc
 
 Vendor:           GoodData
 Group:            GoodData/Tools
@@ -46,6 +46,10 @@ GoodData customized Zuul gatekeeper
 %attr(0755, root, root) %{install_dir}/status
 
 %changelog
+* Thu Dec 16 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-23.gdc
+- Allow github trigger to match on branches/refs
+- Rebase onto upstream changes
+
 * Thu Nov 20 2015 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-22.gdc
 - Fix handling the label events
 

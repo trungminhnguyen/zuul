@@ -1076,7 +1076,7 @@ class BaseFilter(object):
                 elif k == 'newer-than':
                     a[k] = v
                 elif k == 'older-than':
-                    a[k] = v
+                    a[k] = time_to_seconds(v)
             if 'email-filter' in a:
                 del a['email-filter']
         return approvals
@@ -1092,15 +1092,14 @@ class BaseFilter(object):
                 if (by.get('username', '') != v):
                         return False
             elif k == 'email':
-                v = re.compile(v)
                 if (not v.search(by.get('email', ''))):
                         return False
             elif k == 'newer-than':
-                t = now - time_to_seconds(v)
+                t = now - v
                 if (approval['grantedOn'] < t):
                         return False
             elif k == 'older-than':
-                t = now - time_to_seconds(v)
+                t = now - v
                 if (approval['grantedOn'] >= t):
                     return False
             else:

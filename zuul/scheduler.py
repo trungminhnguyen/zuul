@@ -32,7 +32,7 @@ import yaml
 import layoutvalidator
 import model
 from model import Pipeline, Project, ChangeQueue
-from model import ChangeishFilter
+from model import ChangeishFilter, NullChange
 from zuul import change_matcher, exceptions
 from zuul import version as zuul_version
 
@@ -334,8 +334,8 @@ class Scheduler(threading.Thread):
             if not os.path.exists(config_path):
                 raise Exception("Unable to read layout config file at %s" %
                                 config_path)
-        config_file = open(config_path)
-        data = yaml.load(config_file)
+        with open(config_path) as config_file:
+            data = yaml.load(config_file)
 
         validator = layoutvalidator.LayoutValidator()
         validator.validate(data, connections)
@@ -1598,7 +1598,8 @@ class BasePipelineManager(object):
         if event.merged:
             build_set.commit = event.commit
         elif event.updated:
-            build_set.commit = item.change.newrev
+            if not isinstance(item, NullChange):
+                build_set.commit = item.change.newrev
         if not build_set.commit:
             self.log.info("Unable to merge change %s" % item.change)
             self.pipeline.setUnableToMerge(item)

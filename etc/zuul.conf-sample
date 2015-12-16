@@ -26,14 +26,14 @@ default_container=logs
 region_name=EXP
 logserver_prefix=http://logs.example.org/server.app/
 
-[connection my_gerrit]
+[connection gerrit]
 driver=gerrit
 server=review.example.com
 ;baseurl=https://review.example.com/r
 user=jenkins
 sshkey=/home/jenkins/.ssh/id_rsa
 
-[connection public_smtp]
+[connection smtp]
 driver=smtp
 server=localhost
 port=25

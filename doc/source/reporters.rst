@@ -31,7 +31,7 @@ trigger.
 GitHub
 ------
 
-Zull reports back to GitHub pull requests via GitHub API.
+Zuul reports back to GitHub pull requests via GitHub API.
 On success and failure, it creates a comment containing the build results.
 It also sets the status on start, success and failure. Status name and
 description is taken from the pipeline.

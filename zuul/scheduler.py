@@ -534,6 +534,13 @@ class Scheduler(threading.Thread):
             m = config_job.get('mutex', None)
             if m is not None:
                 job.mutex = m
+            tags = toList(config_job.get('tags'))
+            if tags:
+                # Tags are merged via a union rather than a
+                # destructive copy because they are intended to
+                # accumulate onto any previously applied tags from
+                # metajobs.
+                job.tags = job.tags.union(set(tags))
             fname = config_job.get('parameter-function', None)
             if fname:
                 func = config_env.get(fname, None)
@@ -875,7 +882,7 @@ class Scheduler(threading.Thread):
                             "Exception while canceling build %s "
                             "for change %s" % (build, item.change))
             self.layout = layout
-            self.maintainTriggerCache()
+            self.maintainConnectionCache()
             for trigger in self.triggers.values():
                 trigger.postConfig()
             for pipeline in self.layout.pipelines.values():
@@ -1005,16 +1012,18 @@ class Scheduler(threading.Thread):
             finally:
                 self.run_handler_lock.release()
 
-    def maintainTriggerCache(self):
+    def maintainConnectionCache(self):
         relevant = set()
         for pipeline in self.layout.pipelines.values():
-            self.log.debug("Start maintain trigger cache for: %s" % pipeline)
+            self.log.debug("Gather relevant cache items for: %s" % pipeline)
             for item in pipeline.getAllItems():
                 relevant.add(item.change)
                 relevant.update(item.change.getRelatedChanges())
-            pipeline.source.maintainCache(relevant)
-            self.log.debug("End maintain trigger cache for: %s" % pipeline)
-        self.log.debug("Trigger cache size: %s" % len(relevant))
+        for connection in self.connections.values():
+            connection.maintainCache(relevant)
+            self.log.debug(
+                "End maintain connection cache for: %s" % connection)
+        self.log.debug("Connection cache size: %s" % len(relevant))
 
     def process_event_queue(self):
         self.log.debug("Fetching trigger event")

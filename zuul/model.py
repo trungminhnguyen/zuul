@@ -1088,9 +1088,9 @@ class BaseFilter(object):
                 if k == 'username':
                     pass
                 elif k in ['email', 'email-filter']:
-                    a['email'] = v
+                    a['email'] = re.compile(v)
                 elif k == 'newer-than':
-                    a[k] = v
+                    a[k] = time_to_seconds(v)
                 elif k == 'older-than':
                     a[k] = time_to_seconds(v)
             if 'email-filter' in a:

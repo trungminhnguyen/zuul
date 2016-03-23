@@ -25,8 +25,6 @@ import github3
 from zuul.connection import BaseConnection
 from zuul.model import GithubTriggerEvent
 
-log = logging.getLogger("connection.github")
-
 
 class GithubWebhookListener():
 
@@ -167,8 +165,8 @@ class GithubWebhookListener():
                                                body,
                                                hashlib.sha1).hexdigest()
 
-        log.debug("Payload Signature: {0}".format(str(payload_signature)))
-        log.debug("Request Signature: {0}".format(str(request_signature)))
+        self.log.debug("Payload Signature: {0}".format(str(payload_signature)))
+        self.log.debug("Request Signature: {0}".format(str(request_signature)))
         if str(payload_signature) != str(request_signature):
             raise webob.exc.HTTPUnauthorized(
                 'Request signature does not match calculated payload '
@@ -235,7 +233,7 @@ class GithubUser(collections.Mapping):
 
 class GithubConnection(BaseConnection):
     driver_name = 'github'
-    log = logging.getLogger("connection.github")
+    log = logging.getLogger("zuul.connection.Github")
     payload_path = '/payload'
     git_user = 'git'
     git_host = 'github.com'

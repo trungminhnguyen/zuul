@@ -233,7 +233,7 @@ class GithubUser(collections.Mapping):
 
 class GithubConnection(BaseConnection):
     driver_name = 'github'
-    log = logging.getLogger("zuul.connection.Github")
+    log = logging.getLogger("zuul.GithubConnection")
     payload_path = '/payload'
     git_user = 'git'
     git_host = 'github.com'

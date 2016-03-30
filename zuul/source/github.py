@@ -21,7 +21,7 @@ from zuul.source import BaseSource
 
 class GithubSource(BaseSource):
     name = 'github'
-    log = logging.getLogger("zuul.source.Github")
+    log = logging.getLogger("zuul.GithubSource")
 
     def getRefSha(self, project, ref):
         """Return a sha for a given project ref."""

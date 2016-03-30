@@ -22,7 +22,7 @@ class GithubReporter(BaseReporter):
     """Sends off reports to Github."""
 
     name = 'github'
-    log = logging.getLogger("zuul.reporter.github.Reporter")
+    log = logging.getLogger("zuul.GithubReporter")
 
     def __init__(self, reporter_config={}, sched=None, connection=None):
         super(GithubReporter, self).__init__(

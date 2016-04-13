@@ -4,7 +4,7 @@ Name:             zuul
 Summary:          GoodData customized Zuul gatekeeper
 Epoch:            1
 Version:          2.1.1
-Release:          25%{?dist}.gdc
+Release:          26%{?dist}.gdc
 
 Vendor:           GoodData
 Group:            GoodData/Tools
@@ -46,6 +46,10 @@ GoodData customized Zuul gatekeeper
 %attr(0755, root, root) %{install_dir}/status
 
 %changelog
+* Wed Apr 13 2016 Yury Tsarev <yury.tsarev@gooddata.com> 2.1.1-26.gdc
+- Configurable status_url_with_change option
+- Relevant js frontend filtering change
+
 * Tue Mar 15 2016 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-25.gdc
 - Allow file matching for GitHub
 - Log GitHub API Rate

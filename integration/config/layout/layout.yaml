@@ -1,0 +1,27 @@
+pipelines:
+    - name: check
+      manager: IndependentPipelineManager
+      source: github
+      trigger:
+          github:
+              - event:
+                  - pr-open
+                  - pr-change
+                  - pr-reopen
+              - event: pr-comment
+                comment: 'ok to test'
+      start:
+          github:
+              status: true
+      success:
+          github:
+              status: true
+              comment: true
+      failure:
+          github:
+              status: true
+              comment: true
+projects:
+    - name: sample/project
+      check:
+        - sample-test

@@ -38,3 +38,8 @@ install:
 
 clean:
 	rm -rf $(SOURCES) $(PIP_DEPS_DIR) $(VENV_DIR)
+
+test-logging:
+	rm -f integration/.test/log/*
+	tox -e venv -- timeout --preserve-status 10 zuul-server -c integration/config/zuul.conf -d
+	grep -F 'zuul.GithubConnection' integration/.test/log/zuul.log

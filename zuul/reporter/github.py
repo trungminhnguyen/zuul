@@ -14,8 +14,10 @@
 
 import logging
 import voluptuous as v
+import time
 
 from zuul.reporter import BaseReporter
+from zuul.exceptions import MergeFailure
 
 
 class GithubReporter(BaseReporter):
@@ -96,7 +98,12 @@ class GithubReporter(BaseReporter):
         self.log.debug('Reporting change %s, params %s, merging via API' %
                        (item.change, self.reporter_config))
         message = self._formatMergeMessage(item.change)
-        self.connection.mergePull(owner, project, pr_number, message, sha)
+        try:
+            self.connection.mergePull(owner, project, pr_number, message, sha)
+        except MergeFailure:
+            time.sleep(2)
+            self.log.debug('Trying to merge change %s again...' % item.change)
+            self.connection.mergePull(owner, project, pr_number, message, sha)
         item.change.is_merged = True
 
     def setLabels(self, item):

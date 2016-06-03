@@ -238,7 +238,7 @@ def toList(item):
 class Scheduler(threading.Thread):
     log = logging.getLogger("zuul.Scheduler")
 
-    def __init__(self, config):
+    def __init__(self, config, testonly=False):
         threading.Thread.__init__(self)
         self.daemon = True
         self.wake_event = threading.Event()
@@ -263,6 +263,10 @@ class Scheduler(threading.Thread):
         self.result_event_queue = Queue.Queue()
         self.management_event_queue = Queue.Queue()
         self.layout = model.Layout()
+
+        if not testonly:
+            time_dir = self._get_time_database_dir()
+            self.time_database = model.TimeDataBase(time_dir)
 
         self.zuul_version = zuul_version.version_info.release_string()
         self.last_reconfigured = None
@@ -774,6 +778,17 @@ class Scheduler(threading.Thread):
             state_dir = '/var/lib/zuul'
         return os.path.join(state_dir, 'queue.pickle')
 
+    def _get_time_database_dir(self):
+        if self.config.has_option('zuul', 'state_dir'):
+            state_dir = os.path.expanduser(self.config.get('zuul',
+                                                           'state_dir'))
+        else:
+            state_dir = '/var/lib/zuul'
+        d = os.path.join(state_dir, 'times')
+        if not os.path.exists(d):
+            os.mkdir(d)
+        return d
+
     def _save_queue(self):
         pickle_file = self._get_queue_pickle_file()
         events = []
@@ -1103,6 +1118,11 @@ class Scheduler(threading.Thread):
             self.log.warning("Build %s is not associated with a pipeline" %
                              (build,))
             return
+        try:
+            build.estimated_time = float(self.time_database.getEstimatedTime(
+                build.job.name))
+        except Exception:
+            self.log.exception("Exception estimating build time:")
         pipeline.manager.onBuildStarted(event.build)
 
     def _doBuildCompletedEvent(self, event):
@@ -1116,6 +1136,12 @@ class Scheduler(threading.Thread):
             self.log.warning("Build %s is not associated with a pipeline" %
                              (build,))
             return
+        if build.end_time and build.start_time and build.result:
+            duration = build.end_time - build.start_time
+        try:
+            self.time_database.update(build.job.name, duration, build.result)
+        except Exception:
+            self.log.exception("Exception recording build time:")
         pipeline.manager.onBuildCompleted(event.build)
 
     def _doMergeCompletedEvent(self, event):
@@ -1131,6 +1157,11 @@ class Scheduler(threading.Thread):
         pipeline.manager.onMergeCompleted(event)
 
     def formatStatusJSON(self):
+        if self.config.has_option('zuul', 'url_pattern'):
+            url_pattern = self.config.get('zuul', 'url_pattern')
+        else:
+            url_pattern = None
+
         data = {}
 
         data['zuul_version'] = self.zuul_version
@@ -1156,7 +1187,7 @@ class Scheduler(threading.Thread):
         pipelines = []
         data['pipelines'] = pipelines
         for pipeline in self.layout.pipelines.values():
-            pipelines.append(pipeline.formatStatusJSON())
+            pipelines.append(pipeline.formatStatusJSON(url_pattern))
         return json.dumps(data)
 
 
@@ -1484,7 +1515,6 @@ class BasePipelineManager(object):
             return True
         if build_set.merge_state == build_set.PENDING:
             return False
-        build_set.merge_state = build_set.PENDING
         ref = build_set.ref
         if hasattr(item.change, 'refspec') and not ref:
             self.log.debug("Preparing ref for: %s" % item.change)
@@ -1502,6 +1532,8 @@ class BasePipelineManager(object):
             self.sched.merger.updateRepo(item.change.project.name,
                                          url, build_set,
                                          self.pipeline.precedence)
+        # merge:merge has been emitted properly:
+        build_set.merge_state = build_set.PENDING
         return False
 
     def _launchJobs(self, item, jobs):

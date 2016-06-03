@@ -34,7 +34,6 @@ import zuul.reporter.gerrit
 import zuul.reporter.smtp
 
 from tests.base import (
-    BaseTestCase,
     ZuulTestCase,
     repack_repo,
 )
@@ -42,40 +41,6 @@ from tests.base import (
 logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s %(name)-32s '
                     '%(levelname)-8s %(message)s')
-
-
-class TestSchedulerConfigParsing(BaseTestCase):
-
-    def test_parse_skip_if(self):
-        job_yaml = """
-jobs:
-  - name: job_name
-    skip-if:
-      - project: ^project_name$
-        branch: ^stable/icehouse$
-        all-files-match-any:
-          - ^filename$
-      - project: ^project2_name$
-        all-files-match-any:
-          - ^filename2$
-    """.strip()
-        data = yaml.load(job_yaml)
-        config_job = data.get('jobs')[0]
-        sched = zuul.scheduler.Scheduler({})
-        cm = zuul.change_matcher
-        expected = cm.MatchAny([
-            cm.MatchAll([
-                cm.ProjectMatcher('^project_name$'),
-                cm.BranchMatcher('^stable/icehouse$'),
-                cm.MatchAllFiles([cm.FileMatcher('^filename$')]),
-            ]),
-            cm.MatchAll([
-                cm.ProjectMatcher('^project2_name$'),
-                cm.MatchAllFiles([cm.FileMatcher('^filename2$')]),
-            ]),
-        ])
-        matcher = sched._parseSkipIf(config_job)
-        self.assertEqual(expected, matcher)
 
 
 class TestScheduler(ZuulTestCase):
@@ -495,6 +460,46 @@ class TestScheduler(ZuulTestCase):
         self.assertEqual(B.reported, 2)
         self.assertEqual(C.reported, 2)
 
+    def _test_time_database(self, iteration):
+        self.worker.hold_jobs_in_build = True
+        A = self.fake_gerrit.addFakeChange('org/project', 'master', 'A')
+        A.addApproval('CRVW', 2)
+        self.fake_gerrit.addEvent(A.addApproval('APRV', 1))
+        self.waitUntilSettled()
+        time.sleep(2)
+
+        data = json.loads(self.sched.formatStatusJSON())
+        found_job = None
+        for pipeline in data['pipelines']:
+            if pipeline['name'] != 'gate':
+                continue
+            for queue in pipeline['change_queues']:
+                for head in queue['heads']:
+                    for item in head:
+                        for job in item['jobs']:
+                            if job['name'] == 'project-merge':
+                                found_job = job
+                                break
+
+        self.assertIsNotNone(found_job)
+        if iteration == 1:
+            self.assertIsNotNone(found_job['estimated_time'])
+            self.assertIsNone(found_job['remaining_time'])
+        else:
+            self.assertIsNotNone(found_job['estimated_time'])
+            self.assertTrue(found_job['estimated_time'] >= 2)
+            self.assertIsNotNone(found_job['remaining_time'])
+
+        self.worker.hold_jobs_in_build = False
+        self.worker.release()
+        self.waitUntilSettled()
+
+    def test_time_database(self):
+        "Test the time database"
+
+        self._test_time_database(1)
+        self._test_time_database(2)
+
     def test_two_failed_changes_at_head(self):
         "Test that changes are reparented correctly if 2 fail at head"
 
@@ -599,6 +604,36 @@ class TestScheduler(ZuulTestCase):
         self.assertEqual(A.reported, 2)
         self.assertEqual(B.reported, 2)
         self.assertEqual(C.reported, 2)
+
+    def test_parse_skip_if(self):
+        job_yaml = """
+jobs:
+  - name: job_name
+    skip-if:
+      - project: ^project_name$
+        branch: ^stable/icehouse$
+        all-files-match-any:
+          - ^filename$
+      - project: ^project2_name$
+        all-files-match-any:
+          - ^filename2$
+    """.strip()
+        data = yaml.load(job_yaml)
+        config_job = data.get('jobs')[0]
+        cm = zuul.change_matcher
+        expected = cm.MatchAny([
+            cm.MatchAll([
+                cm.ProjectMatcher('^project_name$'),
+                cm.BranchMatcher('^stable/icehouse$'),
+                cm.MatchAllFiles([cm.FileMatcher('^filename$')]),
+            ]),
+            cm.MatchAll([
+                cm.ProjectMatcher('^project2_name$'),
+                cm.MatchAllFiles([cm.FileMatcher('^filename2$')]),
+            ]),
+        ])
+        matcher = self.sched._parseSkipIf(config_job)
+        self.assertEqual(expected, matcher)
 
     def test_patch_order(self):
         "Test that dependent patches are tested in the right order"
@@ -2235,6 +2270,9 @@ class TestScheduler(ZuulTestCase):
         self.fake_gerrit.addEvent(A.addApproval('APRV', 1))
         self.waitUntilSettled()
 
+        self.worker.release('project-merge')
+        self.waitUntilSettled()
+
         port = self.webapp.server.socket.getsockname()[1]
 
         req = urllib2.Request("http://localhost:%s/status.json" % port)
@@ -2255,7 +2293,7 @@ class TestScheduler(ZuulTestCase):
         self.waitUntilSettled()
 
         data = json.loads(data)
-        status_jobs = set()
+        status_jobs = []
         for p in data['pipelines']:
             for q in p['change_queues']:
                 if p['name'] in ['gate', 'conflict']:
@@ -2267,10 +2305,24 @@ class TestScheduler(ZuulTestCase):
                         self.assertTrue(change['active'])
                         self.assertEqual(change['id'], '1,1')
                         for job in change['jobs']:
-                            status_jobs.add(job['name'])
-        self.assertIn('project-merge', status_jobs)
-        self.assertIn('project-test1', status_jobs)
-        self.assertIn('project-test2', status_jobs)
+                            status_jobs.append(job)
+        self.assertEqual('project-merge', status_jobs[0]['name'])
+        self.assertEqual('https://server/job/project-merge/0/',
+                         status_jobs[0]['url'])
+        self.assertEqual('http://logs.example.com/1/1/gate/project-merge/0',
+                         status_jobs[0]['report_url'])
+
+        self.assertEqual('project-test1', status_jobs[1]['name'])
+        self.assertEqual('https://server/job/project-test1/1/',
+                         status_jobs[1]['url'])
+        self.assertEqual('http://logs.example.com/1/1/gate/project-test1/1',
+                         status_jobs[1]['report_url'])
+
+        self.assertEqual('project-test2', status_jobs[2]['name'])
+        self.assertEqual('https://server/job/project-test2/2/',
+                         status_jobs[2]['url'])
+        self.assertEqual('http://logs.example.com/1/1/gate/project-test2/2',
+                         status_jobs[2]['report_url'])
 
     def test_merging_queues(self):
         "Test that transitively-connected change queues are merged"
@@ -4214,6 +4266,45 @@ For CI problems and help debugging, contact ci@example.org"""
         self.fake_gerrit.addEvent(A.getPatchsetCreatedEvent(2))
         self.waitUntilSettled()
         self.assertEqual(self.history[-1].changes, '3,2 2,1 1,2')
+
+    def test_crd_cycle_join(self):
+        "Test an updated change creates a cycle"
+        A = self.fake_gerrit.addFakeChange('org/project2', 'master', 'A')
+
+        self.fake_gerrit.addEvent(A.getPatchsetCreatedEvent(1))
+        self.waitUntilSettled()
+
+        # Create B->A
+        B = self.fake_gerrit.addFakeChange('org/project1', 'master', 'B')
+        B.data['commitMessage'] = '%s\n\nDepends-On: %s\n' % (
+            B.subject, A.data['id'])
+        self.fake_gerrit.addEvent(B.getPatchsetCreatedEvent(1))
+        self.waitUntilSettled()
+
+        # Update A to add A->B (a cycle).
+        A.addPatchset()
+        A.data['commitMessage'] = '%s\n\nDepends-On: %s\n' % (
+            A.subject, B.data['id'])
+        # Normally we would submit the patchset-created event for
+        # processing here, however, we have no way of noting whether
+        # the dependency cycle detection correctly raised an
+        # exception, so instead, we reach into the source driver and
+        # call the method that would ultimately be called by the event
+        # processing.
+
+        source = self.sched.layout.pipelines['gate'].source
+        with testtools.ExpectedException(
+            Exception, "Dependency cycle detected"):
+            source._getChange(u'1', u'2', True)
+        self.log.debug("Got expected dependency cycle exception")
+
+        # Now if we update B to remove the depends-on, everything
+        # should be okay.  B; A->B
+
+        B.addPatchset()
+        B.data['commitMessage'] = '%s\n' % (B.subject,)
+        source._getChange(u'1', u'2', True)
+        source._getChange(u'2', u'2', True)
 
     def test_disable_at(self):
         "Test a pipeline will only report to the disabled trigger when failing"

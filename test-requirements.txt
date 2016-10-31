@@ -10,5 +10,4 @@ python-subunit
 python-swiftclient>=1.6
 testrepository>=0.0.17
 testtools>=0.9.32
-sphinxcontrib-programoutput
 mock

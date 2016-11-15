@@ -44,9 +44,11 @@ class WebApp(threading.Thread):
     log = logging.getLogger("zuul.WebApp")
     change_path_regexp = '/status/change/(.*)$'
 
-    def __init__(self, scheduler, port=8001, cache_expiry=1):
+    def __init__(self, scheduler, port=8001, cache_expiry=1,
+                 listen_address='0.0.0.0'):
         threading.Thread.__init__(self)
         self.scheduler = scheduler
+        self.listen_address = listen_address
         self.port = port
         self.cache_expiry = cache_expiry
         self.cache_time = 0
@@ -54,8 +56,9 @@ class WebApp(threading.Thread):
         self.daemon = True
         self.routes = {}
         self._init_default_routes()
-        self.server = httpserver.serve(dec.wsgify(self.app), host='0.0.0.0',
-                                       port=self.port, start_loop=False)
+        self.server = httpserver.serve(
+            dec.wsgify(self.app), host=self.listen_address, port=self.port,
+            start_loop=False)
 
     def _init_default_routes(self):
         self.register_path('/(status\.json|status)$', self.status)

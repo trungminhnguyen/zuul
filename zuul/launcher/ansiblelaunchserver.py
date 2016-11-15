@@ -14,7 +14,6 @@
 
 import json
 import logging
-import multiprocessing
 import os
 import re
 import shutil
@@ -23,8 +22,10 @@ import socket
 import subprocess
 import tempfile
 import threading
+import time
 import traceback
 import uuid
+import Queue
 
 import gear
 import yaml
@@ -33,25 +34,97 @@ import jenkins_jobs.formatter
 import zmq
 
 import zuul.ansible.library
-import zuul.ansible.plugins.callback_plugins
+from zuul.lib import commandsocket
+
+ANSIBLE_WATCHDOG_GRACE = 5 * 60
+ANSIBLE_DEFAULT_TIMEOUT = 2 * 60 * 60
+ANSIBLE_DEFAULT_PRE_TIMEOUT = 10 * 60
+ANSIBLE_DEFAULT_POST_TIMEOUT = 10 * 60
+
+
+COMMANDS = ['reconfigure', 'stop', 'pause', 'unpause', 'release', 'graceful',
+            'verbose', 'unverbose']
+
+
+def boolify(x):
+    if isinstance(x, str):
+        return bool(int(x))
+    return bool(x)
+
+
+class LaunchGearWorker(gear.Worker):
+    def __init__(self, *args, **kw):
+        self.__launch_server = kw.pop('launch_server')
+        super(LaunchGearWorker, self).__init__(*args, **kw)
+
+    def handleNoop(self, packet):
+        workers = len(self.__launch_server.node_workers)
+        delay = (workers ** 2) / 1000.0
+        time.sleep(delay)
+        return super(LaunchGearWorker, self).handleNoop(packet)
+
+
+class NodeGearWorker(gear.Worker):
+    MASS_DO = 101
+
+    def sendMassDo(self, functions):
+        names = [gear.convert_to_bytes(x) for x in functions]
+        data = b'\x00'.join(names)
+        new_function_dict = {}
+        for name in names:
+            new_function_dict[name] = gear.FunctionRecord(name)
+        self.broadcast_lock.acquire()
+        try:
+            p = gear.Packet(gear.constants.REQ, self.MASS_DO, data)
+            self.broadcast(p)
+            self.functions = new_function_dict
+        finally:
+            self.broadcast_lock.release()
+
+
+class Watchdog(object):
+    def __init__(self, timeout, function, args):
+        self.timeout = timeout
+        self.function = function
+        self.args = args
+        self.thread = threading.Thread(target=self._run)
+        self.thread.daemon = True
+
+    def _run(self):
+        while self._running and time.time() < self.end:
+            time.sleep(10)
+        if self._running:
+            self.function(*self.args)
+
+    def start(self):
+        self._running = True
+        self.end = time.time() + self.timeout
+        self.thread.start()
+
+    def stop(self):
+        self._running = False
 
 
 class JobDir(object):
     def __init__(self, keep=False):
         self.keep = keep
         self.root = tempfile.mkdtemp()
-        self.git_root = os.path.join(self.root, 'git')
-        os.makedirs(self.git_root)
         self.ansible_root = os.path.join(self.root, 'ansible')
         os.makedirs(self.ansible_root)
-        self.plugins_root = os.path.join(self.ansible_root, 'plugins')
-        os.makedirs(self.plugins_root)
+        self.known_hosts = os.path.join(self.ansible_root, 'known_hosts')
         self.inventory = os.path.join(self.ansible_root, 'inventory')
+        self.vars = os.path.join(self.ansible_root, 'vars.yaml')
+        self.pre_playbook = os.path.join(self.ansible_root, 'pre_playbook')
         self.playbook = os.path.join(self.ansible_root, 'playbook')
         self.post_playbook = os.path.join(self.ansible_root, 'post_playbook')
         self.config = os.path.join(self.ansible_root, 'ansible.cfg')
+        self.pre_post_config = os.path.join(self.ansible_root,
+                                            'ansible_pre_post.cfg')
         self.script_root = os.path.join(self.ansible_root, 'scripts')
+        self.ansible_log = os.path.join(self.ansible_root, 'ansible_log.txt')
         os.makedirs(self.script_root)
+        self.staging_root = os.path.join(self.root, 'staging')
+        os.makedirs(self.staging_root)
 
     def __enter__(self):
         return self
@@ -63,40 +136,115 @@ class JobDir(object):
 
 class LaunchServer(object):
     log = logging.getLogger("zuul.LaunchServer")
-    section_re = re.compile('site "(.*?)"')
+    site_section_re = re.compile('site "(.*?)"')
+    node_section_re = re.compile('node "(.*?)"')
 
     def __init__(self, config, keep_jobdir=False):
         self.config = config
+        self.options = dict(
+            verbose=False
+        )
         self.keep_jobdir = keep_jobdir
         self.hostname = socket.gethostname()
+        self.registered_functions = set()
         self.node_workers = {}
-        self.mpmanager = multiprocessing.Manager()
-        self.jobs = self.mpmanager.dict()
-        self.builds = self.mpmanager.dict()
-        self.zmq_send_queue = multiprocessing.JoinableQueue()
-        self.termination_queue = multiprocessing.JoinableQueue()
+        self.jobs = {}
+        self.builds = {}
+        self.zmq_send_queue = Queue.Queue()
+        self.termination_queue = Queue.Queue()
         self.sites = {}
+        self.static_nodes = {}
+        self.command_map = dict(
+            reconfigure=self.reconfigure,
+            stop=self.stop,
+            pause=self.pause,
+            unpause=self.unpause,
+            release=self.release,
+            graceful=self.graceful,
+            verbose=self.verboseOn,
+            unverbose=self.verboseOff,
+        )
+
+        if config.has_option('launcher', 'accept_nodes'):
+            self.accept_nodes = config.getboolean('launcher',
+                                                  'accept_nodes')
+        else:
+            self.accept_nodes = True
+        self.config_accept_nodes = self.accept_nodes
+
+        if self.config.has_option('zuul', 'state_dir'):
+            state_dir = os.path.expanduser(
+                self.config.get('zuul', 'state_dir'))
+        else:
+            state_dir = '/var/lib/zuul'
+        path = os.path.join(state_dir, 'launcher.socket')
+        self.command_socket = commandsocket.CommandSocket(path)
+        ansible_dir = os.path.join(state_dir, 'ansible')
+        self.library_dir = os.path.join(ansible_dir, 'library')
+        if not os.path.exists(self.library_dir):
+            os.makedirs(self.library_dir)
+        self.pre_post_library_dir = os.path.join(ansible_dir,
+                                                 'pre_post_library')
+        if not os.path.exists(self.pre_post_library_dir):
+            os.makedirs(self.pre_post_library_dir)
+
+        library_path = os.path.dirname(os.path.abspath(
+            zuul.ansible.library.__file__))
+        # Ansible library modules that should be available to all
+        # playbooks:
+        all_libs = ['zuul_log.py', 'zuul_console.py']
+        # Modules that should only be used by job playbooks:
+        job_libs = ['command.py']
+
+        for fn in all_libs:
+            shutil.copy(os.path.join(library_path, fn), self.library_dir)
+            shutil.copy(os.path.join(library_path, fn),
+                        self.pre_post_library_dir)
+        for fn in job_libs:
+            shutil.copy(os.path.join(library_path, fn), self.library_dir)
+
+        def get_config_default(section, option, default):
+            if config.has_option(section, option):
+                return config.get(section, option)
+            return default
 
         for section in config.sections():
-            m = self.section_re.match(section)
+            m = self.site_section_re.match(section)
             if m:
                 sitename = m.group(1)
                 d = {}
-                d['host'] = config.get(section, 'host')
-                d['user'] = config.get(section, 'user')
-                d['pass'] = config.get(section, 'pass', '')
-                d['root'] = config.get(section, 'root', '/')
+                d['host'] = get_config_default(section, 'host', None)
+                d['user'] = get_config_default(section, 'user', '')
+                d['pass'] = get_config_default(section, 'pass', '')
+                d['root'] = get_config_default(section, 'root', '/')
+                d['keytab'] = get_config_default(section, 'keytab', None)
                 self.sites[sitename] = d
+                continue
+            m = self.node_section_re.match(section)
+            if m:
+                nodename = m.group(1)
+                d = {}
+                d['name'] = nodename
+                d['host'] = config.get(section, 'host')
+                d['description'] = get_config_default(section,
+                                                      'description', '')
+                if config.has_option(section, 'labels'):
+                    d['labels'] = config.get(section, 'labels').split(',')
+                else:
+                    d['labels'] = []
+                self.static_nodes[nodename] = d
+                continue
 
     def start(self):
         self._gearman_running = True
         self._zmq_running = True
         self._reaper_running = True
+        self._command_running = True
 
         # Setup ZMQ
         self.zcontext = zmq.Context()
         self.zsocket = self.zcontext.socket(zmq.PUB)
-        self.zsocket.bind("tcp://*:8881")
+        self.zsocket.bind("tcp://*:8888")
 
         # Setup Gearman
         server = self.config.get('gearman', 'server')
@@ -104,12 +252,20 @@ class LaunchServer(object):
             port = self.config.get('gearman', 'port')
         else:
             port = 4730
-        self.worker = gear.Worker('Zuul Launch Server')
+        self.worker = LaunchGearWorker('Zuul Launch Server',
+                                       launch_server=self)
         self.worker.addServer(server, port)
         self.log.debug("Waiting for server")
         self.worker.waitForServer()
         self.log.debug("Registering")
         self.register()
+
+        # Start command socket
+        self.log.debug("Starting command processor")
+        self.command_socket.start()
+        self.command_thread = threading.Thread(target=self.runCommand)
+        self.command_thread.daemon = True
+        self.command_thread.start()
 
         # Load JJB config
         self.loadJobs()
@@ -132,6 +288,11 @@ class LaunchServer(object):
         self.gearman_thread.daemon = True
         self.gearman_thread.start()
 
+        # Start static workers
+        for node in self.static_nodes.values():
+            self.log.debug("Creating static node with arguments: %s" % (node,))
+            self._launchWorker(node)
+
     def loadJobs(self):
         self.log.debug("Loading jobs")
         builder = JJB()
@@ -147,12 +308,21 @@ class LaunchServer(object):
             del self.jobs[name]
 
     def register(self):
-        self.worker.registerFunction("node-assign:zuul")
-        self.worker.registerFunction("stop:%s" % self.hostname)
+        new_functions = set()
+        if self.accept_nodes:
+            new_functions.add("node_assign:zuul")
+        new_functions.add("stop:%s" % self.hostname)
+        new_functions.add("set_description:%s" % self.hostname)
+        new_functions.add("node_revoke:%s" % self.hostname)
 
-    def reconfigure(self, config):
+        for function in new_functions - self.registered_functions:
+            self.worker.registerFunction(function)
+        for function in self.registered_functions - new_functions:
+            self.worker.unRegisterFunction(function)
+        self.registered_functions = new_functions
+
+    def reconfigure(self):
         self.log.debug("Reconfiguring")
-        self.config = config
         self.loadJobs()
         for node in self.node_workers.values():
             try:
@@ -163,24 +333,101 @@ class LaunchServer(object):
                                    "to worker:")
         self.log.debug("Reconfiguration complete")
 
+    def pause(self):
+        self.log.debug("Pausing")
+        self.accept_nodes = False
+        self.register()
+        for node in self.node_workers.values():
+            try:
+                if node.isAlive():
+                    node.queue.put(dict(action='pause'))
+            except Exception:
+                self.log.exception("Exception sending pause command "
+                                   "to worker:")
+        self.log.debug("Paused")
+
+    def unpause(self):
+        self.log.debug("Unpausing")
+        self.accept_nodes = self.config_accept_nodes
+        self.register()
+        for node in self.node_workers.values():
+            try:
+                if node.isAlive():
+                    node.queue.put(dict(action='unpause'))
+            except Exception:
+                self.log.exception("Exception sending unpause command "
+                                   "to worker:")
+        self.log.debug("Unpaused")
+
+    def release(self):
+        self.log.debug("Releasing idle nodes")
+        for node in self.node_workers.values():
+            if node.name in self.static_nodes:
+                continue
+            try:
+                if node.isAlive():
+                    node.queue.put(dict(action='release'))
+            except Exception:
+                self.log.exception("Exception sending release command "
+                                   "to worker:")
+        self.log.debug("Finished releasing idle nodes")
+
+    def graceful(self):
+        # Note: this is run in the command processing thread; no more
+        # external commands will be processed after this.
+        self.log.debug("Gracefully stopping")
+        self.pause()
+        self.release()
+        self.log.debug("Waiting for all builds to finish")
+        while self.builds:
+            time.sleep(5)
+        self.log.debug("All builds are finished")
+        self.stop()
+
     def stop(self):
         self.log.debug("Stopping")
+        # First, stop accepting new jobs
         self._gearman_running = False
         self._reaper_running = False
         self.worker.shutdown()
+        # Then stop all of the workers
         for node in self.node_workers.values():
             try:
                 if node.isAlive():
                     node.stop()
             except Exception:
                 self.log.exception("Exception sending stop command to worker:")
+        # Stop ZMQ afterwords so that the send queue is flushed
         self._zmq_running = False
         self.zmq_send_queue.put(None)
         self.zmq_send_queue.join()
+        # Stop command processing
+        self._command_running = False
+        self.command_socket.stop()
+        # Join the gearman thread which was stopped earlier.
+        self.gearman_thread.join()
+        # The command thread is joined in the join() method of this
+        # class, which is called by the command shell.
         self.log.debug("Stopped")
 
+    def verboseOn(self):
+        self.log.debug("Enabling verbose mode")
+        self.options['verbose'] = True
+
+    def verboseOff(self):
+        self.log.debug("Disabling verbose mode")
+        self.options['verbose'] = False
+
     def join(self):
-        self.gearman_thread.join()
+        self.command_thread.join()
+
+    def runCommand(self):
+        while self._command_running:
+            try:
+                command = self.command_socket.get()
+                self.command_map[command]()
+            except Exception:
+                self.log.exception("Exception while processing command")
 
     def runZMQ(self):
         while self._zmq_running or not self.zmq_send_queue.empty():
@@ -200,12 +447,19 @@ class LaunchServer(object):
             try:
                 job = self.worker.getJob()
                 try:
-                    if job.name.startswith('node-assign:'):
-                        self.log.debug("Got node-assign job: %s" % job.unique)
+                    if job.name.startswith('node_assign:'):
+                        self.log.debug("Got node_assign job: %s" % job.unique)
                         self.assignNode(job)
                     elif job.name.startswith('stop:'):
                         self.log.debug("Got stop job: %s" % job.unique)
                         self.stopJob(job)
+                    elif job.name.startswith('set_description:'):
+                        self.log.debug("Got set_description job: %s" %
+                                       job.unique)
+                        job.sendWorkComplete()
+                    elif job.name.startswith('node_revoke:'):
+                        self.log.debug("Got node_revoke job: %s" % job.unique)
+                        self.revokeNode(job)
                     else:
                         self.log.error("Unable to handle job %s" % job.name)
                         job.sendWorkFail()
@@ -220,19 +474,44 @@ class LaunchServer(object):
     def assignNode(self, job):
         args = json.loads(job.arguments)
         self.log.debug("Assigned node with arguments: %s" % (args,))
+        self._launchWorker(args)
+        data = dict(manager=self.hostname)
+        job.sendWorkData(json.dumps(data))
+        job.sendWorkComplete()
+
+    def _launchWorker(self, args):
         worker = NodeWorker(self.config, self.jobs, self.builds,
                             self.sites, args['name'], args['host'],
                             args['description'], args['labels'],
                             self.hostname, self.zmq_send_queue,
-                            self.termination_queue, self.keep_jobdir)
+                            self.termination_queue, self.keep_jobdir,
+                            self.library_dir, self.pre_post_library_dir,
+                            self.options)
         self.node_workers[worker.name] = worker
 
-        worker.process = multiprocessing.Process(target=worker.run)
-        worker.process.start()
+        worker.thread = threading.Thread(target=worker.run)
+        worker.thread.start()
 
-        data = dict(manager=self.hostname)
-        job.sendWorkData(json.dumps(data))
-        job.sendWorkComplete()
+    def revokeNode(self, job):
+        try:
+            args = json.loads(job.arguments)
+            self.log.debug("Revoke job with arguments: %s" % (args,))
+            name = args['name']
+            node = self.node_workers.get(name)
+            if not node:
+                self.log.debug("Unable to find worker %s" % (name,))
+                return
+            try:
+                if node.isAlive():
+                    node.queue.put(dict(action='stop'))
+                else:
+                    self.log.debug("Node %s is not alive while revoking node" %
+                                   (node.name,))
+            except Exception:
+                self.log.exception("Exception sending stop command "
+                                   "to worker:")
+        finally:
+            job.sendWorkComplete()
 
     def stopJob(self, job):
         try:
@@ -269,7 +548,7 @@ class LaunchServer(object):
                     continue
                 worker = self.node_workers[item]
                 self.log.debug("Joining %s" % (item,))
-                worker.process.join()
+                worker.thread.join()
                 self.log.debug("Joined %s" % (item,))
                 del self.node_workers[item]
             except Exception:
@@ -280,9 +559,15 @@ class LaunchServer(object):
 
 
 class NodeWorker(object):
+    retry_args = dict(register='task_result',
+                      until='task_result.rc == 0',
+                      retries=3,
+                      delay=30)
+
     def __init__(self, config, jobs, builds, sites, name, host,
                  description, labels, manager_name, zmq_send_queue,
-                 termination_queue, keep_jobdir):
+                 termination_queue, keep_jobdir, library_dir,
+                 pre_post_library_dir, options):
         self.log = logging.getLogger("zuul.NodeWorker.%s" % (name,))
         self.log.debug("Creating node worker %s" % (name,))
         self.config = config
@@ -295,18 +580,31 @@ class NodeWorker(object):
         if not isinstance(labels, list):
             labels = [labels]
         self.labels = labels
-        self.process = None
+        self.thread = None
         self.registered_functions = set()
+        # If the unpaused Event is set, that means we should run jobs.
+        # If it is clear, then we are paused and should not run jobs.
+        self.unpaused = threading.Event()
+        self.unpaused.set()
         self._running = True
-        self.queue = multiprocessing.JoinableQueue()
+        self.queue = Queue.Queue()
         self.manager_name = manager_name
         self.zmq_send_queue = zmq_send_queue
         self.termination_queue = termination_queue
         self.keep_jobdir = keep_jobdir
         self.running_job_lock = threading.Lock()
+        self.pending_registration = False
+        self.registration_lock = threading.Lock()
+        self._get_job_lock = threading.Lock()
+        self._got_job = False
         self._job_complete_event = threading.Event()
         self._running_job = False
+        self._aborted_job = False
+        self._watchdog_timeout = False
         self._sent_complete_event = False
+        self.ansible_pre_proc = None
+        self.ansible_job_proc = None
+        self.ansible_post_proc = None
         self.workspace_root = config.get('launcher', 'workspace_root')
         if self.config.has_option('launcher', 'private_key_file'):
             self.private_key_file = config.get('launcher', 'private_key_file')
@@ -316,22 +614,24 @@ class NodeWorker(object):
             self.username = config.get('launcher', 'username')
         else:
             self.username = 'zuul'
+        self.library_dir = library_dir
+        self.pre_post_library_dir = pre_post_library_dir
+        self.options = options
 
     def isAlive(self):
         # Meant to be called from the manager
-        if self.process and self.process.is_alive():
+        if self.thread and self.thread.is_alive():
             return True
         return False
 
     def run(self):
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
         self.log.debug("Node worker %s starting" % (self.name,))
         server = self.config.get('gearman', 'server')
         if self.config.has_option('gearman', 'port'):
             port = self.config.get('gearman', 'port')
         else:
             port = 4730
-        self.worker = gear.Worker(self.name)
+        self.worker = NodeGearWorker(self.name)
         self.worker.addServer(server, port)
         self.log.debug("Waiting for server")
         self.worker.waitForServer()
@@ -356,8 +656,30 @@ class NodeWorker(object):
         # will be set by the queue thread.
         self.log.debug("Submitting stop request")
         self._running = False
+        self.unpaused.set()
         self.queue.put(dict(action='stop'))
         self.queue.join()
+
+    def pause(self):
+        self.unpaused.clear()
+        self.worker.stopWaitingForJobs()
+
+    def unpause(self):
+        self.unpaused.set()
+
+    def release(self):
+        # If this node is idle, stop it.
+        old_unpaused = self.unpaused.is_set()
+        if old_unpaused:
+            self.pause()
+        with self._get_job_lock:
+            if self._got_job:
+                self.log.debug("This worker is not idle")
+                if old_unpaused:
+                    self.unpause()
+                return
+        self.log.debug("Stopping due to release command")
+        self.queue.put(dict(action='stop'))
 
     def _runQueue(self):
         item = self.queue.get()
@@ -371,6 +693,15 @@ class NodeWorker(object):
                 else:
                     self._job_complete_event.wait()
                 self.worker.shutdown()
+            if item['action'] == 'pause':
+                self.log.debug("Received pause request")
+                self.pause()
+            if item['action'] == 'unpause':
+                self.log.debug("Received unpause request")
+                self.unpause()
+            if item['action'] == 'release':
+                self.log.debug("Received release request")
+                self.release()
             elif item['action'] == 'reconfigure':
                 self.log.debug("Received reconfigure request")
                 self.register()
@@ -383,15 +714,23 @@ class NodeWorker(object):
     def runGearman(self):
         while self._running:
             try:
-                self._runGearman()
+                self.unpaused.wait()
+                if self._running:
+                    self._runGearman()
             except Exception:
                 self.log.exception("Exception in gearman manager:")
+            with self._get_job_lock:
+                self._got_job = False
 
     def _runGearman(self):
-        try:
-            job = self.worker.getJob()
-        except gear.InterruptedError:
-            return
+        if self.pending_registration:
+            self.register()
+        with self._get_job_lock:
+            try:
+                job = self.worker.getJob()
+                self._got_job = True
+            except gear.InterruptedError:
+                return
         self.log.debug("Node worker %s got job %s" % (self.name, job.name))
         try:
             if job.name not in self.registered_functions:
@@ -419,24 +758,34 @@ class NodeWorker(object):
         return ret
 
     def register(self):
-        if self._running_job:
+        if not self.registration_lock.acquire(False):
+            self.log.debug("Registration already in progress")
             return
-        new_functions = set()
-        for job in self.jobs.values():
-            new_functions |= self.generateFunctionNames(job)
-        for function in new_functions - self.registered_functions:
-            self.worker.registerFunction(function)
-        for function in self.registered_functions - new_functions:
-            self.worker.unRegisterFunction(function)
-        self.registered_functions = new_functions
+        try:
+            if self._running_job:
+                self.pending_registration = True
+                self.log.debug("Ignoring registration due to running job")
+                return
+            self.log.debug("Updating registration")
+            self.pending_registration = False
+            new_functions = set()
+            for job in self.jobs.values():
+                new_functions |= self.generateFunctionNames(job)
+            self.worker.sendMassDo(new_functions)
+            self.registered_functions = new_functions
+        finally:
+            self.registration_lock.release()
 
     def abortRunningJob(self):
+        self._aborted_job = True
+        return self.abortRunningProc(self.ansible_job_proc)
+
+    def abortRunningProc(self, proc):
         aborted = False
         self.log.debug("Abort: acquiring job lock")
         with self.running_job_lock:
             if self._running_job:
                 self.log.debug("Abort: a job is running")
-                proc = self.ansible_proc
                 if proc:
                     self.log.debug("Abort: sending kill signal to job "
                                    "process group")
@@ -458,15 +807,15 @@ class NodeWorker(object):
 
         # Make sure we can parse what we need from the job first
         args = json.loads(job.arguments)
-        # This may be configurable later, or we may choose to honor
-        # OFFLINE_NODE_WHEN_COMPLETE
-        offline = True
+        offline = boolify(args.get('OFFLINE_NODE_WHEN_COMPLETE', False))
         job_name = job.name.split(':')[1]
 
         # Initialize the result so we have something regardless of
         # whether the job actually runs
         result = None
         self._sent_complete_event = False
+        self._aborted_job = False
+        self._watchog_timeout = False
 
         try:
             self.sendStartEvent(job_name, args)
@@ -479,11 +828,10 @@ class NodeWorker(object):
             self.log.exception("Exception while launching job thread")
 
         self._running_job = False
-        if not result:
-            result = b''
 
         try:
-            job.sendWorkComplete(result)
+            data = json.dumps(dict(result=result))
+            job.sendWorkComplete(data)
         except Exception:
             self.log.exception("Exception while sending job completion packet")
 
@@ -534,7 +882,9 @@ class NodeWorker(object):
                                'SUCCESS', {})
 
     def runJob(self, job, args):
-        self.ansible_proc = None
+        self.ansible_pre_proc = None
+        self.ansible_job_proc = None
+        self.ansible_post_proc = None
         result = None
         with self.running_job_lock:
             if not self._running:
@@ -552,19 +902,39 @@ class NodeWorker(object):
             data = {
                 'manager': self.manager_name,
                 'number': job.unique,
-                'url': 'telnet://%s:8088' % self.host,
             }
+            if ':' in self.host:
+                data['url'] = 'telnet://[%s]:19885' % self.host
+            else:
+                data['url'] = 'telnet://%s:19885' % self.host
+
             job.sendWorkData(json.dumps(data))
             job.sendWorkStatus(0, 100)
 
-            job_status = self.runAnsiblePlaybook(jobdir, timeout)
-            post_status = self.runAnsiblePostPlaybook(jobdir, job_status)
-            if job_status and post_status:
-                status = 'SUCCESS'
-            else:
-                status = 'FAILURE'
+            pre_status = self.runAnsiblePrePlaybook(jobdir)
+            if pre_status is None:
+                # These should really never fail, so return None and have
+                # zuul try again
+                return result
 
-            result = json.dumps(dict(result=status))
+            job_status = self.runAnsiblePlaybook(jobdir, timeout)
+            if job_status is None:
+                # The result of the job is indeterminate.  Zuul will
+                # run it again.
+                return result
+
+            post_status = self.runAnsiblePostPlaybook(jobdir, job_status)
+            if not post_status:
+                result = 'POST_FAILURE'
+            elif job_status:
+                result = 'SUCCESS'
+            else:
+                result = 'FAILURE'
+
+            if self._aborted_job and not self._watchdog_timeout:
+                # A Null result will cause zuul to relaunch the job if
+                # it needs to.
+                result = None
 
         return result
 
@@ -603,11 +973,23 @@ class NodeWorker(object):
     def _makeSCPTask(self, jobdir, publisher, parameters):
         tasks = []
         for scpfile in publisher['scp']['files']:
+            scproot = tempfile.mkdtemp(dir=jobdir.staging_root)
+            os.chmod(scproot, 0o755)
+
             site = publisher['scp']['site']
-            if site not in self.sites:
-                raise Exception("Undefined SCP site: %s" % (site,))
-            site = self.sites[site]
             if scpfile.get('copy-console'):
+                # Include the local ansible directory in the console
+                # upload.  This uploads the playbook and ansible logs.
+                copyargs = dict(src=jobdir.ansible_root + '/',
+                                dest=os.path.join(scproot, '_zuul_ansible'))
+                task = dict(name='copy console log',
+                            copy=copyargs,
+                            delegate_to='127.0.0.1')
+                # This is a local copy and should not fail, so does
+                # not need a retry stanza.
+                tasks.append(task)
+
+                # Fetch the console log from the remote host.
                 src = '/tmp/console.html'
                 rsync_opts = []
             else:
@@ -617,47 +999,63 @@ class NodeWorker(object):
                 rsync_opts = self._getRsyncOptions(scpfile['source'],
                                                    parameters)
 
-            scproot = tempfile.mkdtemp(dir=jobdir.ansible_root)
-            os.chmod(scproot, 0o755)
             syncargs = dict(src=src,
                             dest=scproot,
                             copy_links='yes',
                             mode='pull')
             if rsync_opts:
                 syncargs['rsync_opts'] = rsync_opts
-            task = dict(synchronize=syncargs)
+            task = dict(name='copy files from node',
+                        synchronize=syncargs)
             if not scpfile.get('copy-after-failure'):
-                task['when'] = 'success'
+                task['when'] = 'success|bool'
+            task.update(self.retry_args)
             tasks.append(task)
 
-            dest = scpfile['target']
-            dest = self._substituteVariables(dest, parameters)
-            dest = os.path.join(site['root'], dest)
-            dest = os.path.normpath(dest)
-            if not dest.startswith(site['root']):
-                raise Exception("Target path %s is not below site root" %
-                                (dest,))
-
-            local_args = [
-                'command', '/usr/bin/rsync', '--delay-updates', '-F',
-                '--compress', '-rt', '--safe-links',
-                '--rsync-path="mkdir -p {dest} && rsync"',
-                '--rsh="/usr/bin/ssh -i {private_key_file} -S none '
-                '-o StrictHostKeyChecking=no -q"',
-                '--out-format="<<CHANGED>>%i %n%L"',
-                '"{source}/"', '"{user}@{host}:{dest}"'
-            ]
-            local_action = ' '.join(local_args).format(
-                source=scproot,
-                dest=dest,
-                private_key_file=self.private_key_file,
-                host=site['host'],
-                user=site['user'])
-            task = dict(local_action=local_action)
-            if not scpfile.get('copy-after-failure'):
-                task['when'] = 'success'
+            task = self._makeSCPTaskLocalAction(
+                site, scpfile, scproot, parameters)
+            task.update(self.retry_args)
             tasks.append(task)
         return tasks
+
+    def _makeSCPTaskLocalAction(self, site, scpfile, scproot, parameters):
+        if site not in self.sites:
+            raise Exception("Undefined SCP site: %s" % (site,))
+        site = self.sites[site]
+        dest = scpfile['target'].lstrip('/')
+        dest = self._substituteVariables(dest, parameters)
+        dest = os.path.join(site['root'], dest)
+        dest = os.path.normpath(dest)
+        if not dest.startswith(site['root']):
+            raise Exception("Target path %s is not below site root" %
+                            (dest,))
+
+        rsync_cmd = [
+            '/usr/bin/rsync', '--delay-updates', '-F',
+            '--compress', '-rt', '--safe-links',
+            '--rsync-path="mkdir -p {dest} && rsync"',
+            '--rsh="/usr/bin/ssh -i {private_key_file} -S none '
+            '-o StrictHostKeyChecking=no -q"',
+            '--out-format="<<CHANGED>>%i %n%L"',
+            '{source}', '"{user}@{host}:{dest}"'
+        ]
+        if scpfile.get('keep-hierarchy'):
+            source = '"%s/"' % scproot
+        else:
+            source = '`/usr/bin/find "%s" -type f`' % scproot
+        shellargs = ' '.join(rsync_cmd).format(
+            source=source,
+            dest=dest,
+            private_key_file=self.private_key_file,
+            host=site['host'],
+            user=site['user'])
+        task = dict(name='rsync logs to server',
+                    shell=shellargs,
+                    delegate_to='127.0.0.1')
+        if not scpfile.get('copy-after-failure'):
+            task['when'] = 'success|bool'
+
+        return task
 
     def _makeFTPTask(self, jobdir, publisher, parameters):
         tasks = []
@@ -667,7 +1065,7 @@ class NodeWorker(object):
             raise Exception("Undefined FTP site: %s" % site)
         site = self.sites[site]
 
-        ftproot = tempfile.mkdtemp(dir=jobdir.ansible_root)
+        ftproot = tempfile.mkdtemp(dir=jobdir.staging_root)
         ftpcontent = os.path.join(ftproot, 'content')
         os.makedirs(ftpcontent)
         ftpscript = os.path.join(ftproot, 'script')
@@ -679,22 +1077,27 @@ class NodeWorker(object):
                                            parameters)
         syncargs = dict(src=src,
                         dest=ftpcontent,
-                        copy_links='yes')
+                        copy_links='yes',
+                        mode='pull')
         if rsync_opts:
             syncargs['rsync_opts'] = rsync_opts
-        task = dict(synchronize=syncargs,
-                    when='success')
+        task = dict(name='copy files from node',
+                    synchronize=syncargs,
+                    when='success|bool')
+        task.update(self.retry_args)
         tasks.append(task)
-        task = dict(shell='lftp -f %s' % ftpscript,
-                    when='success')
+        task = dict(name='FTP files to server',
+                    shell='lftp -f %s' % ftpscript,
+                    when='success|bool',
+                    delegate_to='127.0.0.1')
         ftpsource = ftpcontent
         if ftp.get('remove-prefix'):
             ftpsource = os.path.join(ftpcontent, ftp['remove-prefix'])
         while ftpsource[-1] == '/':
             ftpsource = ftpsource[:-1]
-        ftptarget = ftp['target']
+        ftptarget = ftp['target'].lstrip('/')
         ftptarget = self._substituteVariables(ftptarget, parameters)
-        ftptarget = os.path.join(site['root'], ftp['target'])
+        ftptarget = os.path.join(site['root'], ftptarget)
         ftptarget = os.path.normpath(ftptarget)
         if not ftptarget.startswith(site['root']):
             raise Exception("Target path %s is not below site root" %
@@ -705,12 +1108,208 @@ class NodeWorker(object):
             script.write('open %s\n' % site['host'])
             script.write('user %s %s\n' % (site['user'], site['pass']))
             script.write('mirror -R %s %s\n' % (ftpsource, ftptarget))
+        task.update(self.retry_args)
         tasks.append(task)
         return tasks
 
-    def _makeBuilderTask(self, jobdir, builder, parameters, timeout):
+    def _makeAFSTask(self, jobdir, publisher, parameters):
         tasks = []
-        script_fn = '%s.sh' % str(uuid.uuid4().hex)
+        afs = publisher['afs']
+        site = afs['site']
+        if site not in self.sites:
+            raise Exception("Undefined AFS site: %s" % site)
+        site = self.sites[site]
+
+        # It is possible that this could be done in one rsync step,
+        # however, the current rysnc from the host is complicated (so
+        # that we can match the behavior of ant), and then rsync to
+        # afs is complicated and involves a pre-processing step in
+        # both locations (so that we can exclude directories).  Each
+        # is well understood individually so it is easier to compose
+        # them in series than combine them together.  A better,
+        # longer-lived solution (with better testing) would do just
+        # that.
+        afsroot = tempfile.mkdtemp(dir=jobdir.staging_root)
+        afscontent = os.path.join(afsroot, 'content')
+        afssource = afscontent
+        if afs.get('remove-prefix'):
+            afssource = os.path.join(afscontent, afs['remove-prefix'])
+        while afssource[-1] == '/':
+            afssource = afssource[:-1]
+
+        src = parameters['WORKSPACE']
+        if not src.endswith('/'):
+            src = src + '/'
+        rsync_opts = self._getRsyncOptions(afs['source'],
+                                           parameters)
+        syncargs = dict(src=src,
+                        dest=afscontent,
+                        copy_links='yes',
+                        mode='pull')
+        if rsync_opts:
+            syncargs['rsync_opts'] = rsync_opts
+        task = dict(name='copy files from node',
+                    synchronize=syncargs,
+                    when='success|bool')
+        task.update(self.retry_args)
+        tasks.append(task)
+
+        afstarget = afs['target'].lstrip('/')
+        afstarget = self._substituteVariables(afstarget, parameters)
+        afstarget = os.path.join(site['root'], afstarget)
+        afstarget = os.path.normpath(afstarget)
+        if not afstarget.startswith(site['root']):
+            raise Exception("Target path %s is not below site root" %
+                            (afstarget,))
+
+        src_markers_file = os.path.join(afsroot, 'src-markers')
+        dst_markers_file = os.path.join(afsroot, 'dst-markers')
+        exclude_file = os.path.join(afsroot, 'exclude')
+        filter_file = os.path.join(afsroot, 'filter')
+
+        find_pipe = [
+            "/usr/bin/find {path} -name .root-marker -printf '/%P\n'",
+            "/usr/bin/xargs -I{{}} dirname {{}}",
+            "/usr/bin/sort > {file}"]
+        find_pipe = ' | '.join(find_pipe)
+
+        # Find the list of root markers in the just-completed build
+        # (usually there will only be one, but some builds produce
+        # content at the root *and* at a tag location).
+        task = dict(name='find root markers in build',
+                    shell=find_pipe.format(path=afssource,
+                                           file=src_markers_file),
+                    when='success|bool',
+                    delegate_to='127.0.0.1')
+        tasks.append(task)
+
+        # Find the list of root markers that already exist in the
+        # published site.
+        task = dict(name='find root markers in site',
+                    shell=find_pipe.format(path=afstarget,
+                                           file=dst_markers_file),
+                    when='success|bool',
+                    delegate_to='127.0.0.1')
+        tasks.append(task)
+
+        # Create a file that contains the set of directories with root
+        # markers in the published site that do not have root markers
+        # in the built site.
+        exclude_command = "/usr/bin/comm -23 {dst} {src} > {exclude}".format(
+            src=src_markers_file,
+            dst=dst_markers_file,
+            exclude=exclude_file)
+        task = dict(name='produce list of root maker differences',
+                    shell=exclude_command,
+                    when='success|bool',
+                    delegate_to='127.0.0.1')
+        tasks.append(task)
+
+        # Create a filter list for rsync so that we copy exactly the
+        # directories we want to without deleting any existing
+        # directories in the published site that were placed there by
+        # previous builds.
+
+        # The first group of items in the filter list are the
+        # directories in the current build with root markers, except
+        # for the root of the build.  This is so that if, later, the
+        # build root ends up as an exclude, we still copy the
+        # directories in this build underneath it (since these
+        # includes will have matched first).  We can't include the
+        # build root itself here, even if we do want to synchronize
+        # it, since that would defeat later excludes.  In other words,
+        # if the build produces a root marker in "/subdir" but not in
+        # "/", this section is needed so that "/subdir" is copied at
+        # all, since "/" will be excluded later.
+
+        command = ("/bin/grep -v '^/$' {src} | "
+                   "/bin/sed -e 's/^/+ /' > {filter}".format(
+                       src=src_markers_file,
+                       filter=filter_file))
+        task = dict(name='produce first filter list',
+                    shell=command,
+                    when='success|bool',
+                    delegate_to='127.0.0.1')
+        tasks.append(task)
+
+        # The second group is the set of directories that are in the
+        # published site but not in the built site.  This is so that
+        # if the built site does contain a marker at root (meaning
+        # that there is content that should be copied into the root)
+        # that we don't delete everything else previously built
+        # underneath the root.
+
+        command = ("/bin/grep -v '^/$' {exclude} | "
+                   "/bin/sed -e 's/^/- /' >> {filter}".format(
+                       exclude=exclude_file,
+                       filter=filter_file))
+        task = dict(name='produce second filter list',
+                    shell=command,
+                    when='success|bool',
+                    delegate_to='127.0.0.1')
+        tasks.append(task)
+
+        # The last entry in the filter file is for the build root.  If
+        # there is no marker in the build root, then we need to
+        # exclude it from the rsync, so we add it here.  It needs to
+        # be in the form of '/*' so that it matches all of the files
+        # in the build root.  If there is no marker at the build root,
+        # then we should omit the '/*' exclusion so that it is
+        # implicitly included.
+
+        command = ("/bin/grep '^/$' {exclude} && "
+                   "echo '- /*' >> {filter} || "
+                   "/bin/true".format(
+                       exclude=exclude_file,
+                       filter=filter_file))
+        task = dict(name='produce third filter list',
+                    shell=command,
+                    when='success|bool',
+                    delegate_to='127.0.0.1')
+        tasks.append(task)
+
+        task = dict(name='cat filter list',
+                    shell='cat {filter}'.format(filter=filter_file),
+                    when='success|bool',
+                    delegate_to='127.0.0.1')
+        tasks.append(task)
+
+        # Perform the rsync with the filter list.
+        rsync_cmd = ' '.join([
+            '/usr/bin/rsync', '-rtp', '--safe-links', '--delete-after',
+            "--out-format='<<CHANGED>>%i %n%L'",
+            "--filter='merge {filter}'", '{src}/', '{dst}/',
+        ])
+        mkdir_cmd = ' '.join(['mkdir', '-p', '{dst}/'])
+        bash_cmd = ' '.join([
+            '/bin/bash', '-c', '"{mkdir_cmd} && {rsync_cmd}"'
+        ]).format(
+            mkdir_cmd=mkdir_cmd,
+            rsync_cmd=rsync_cmd)
+
+        k5start_cmd = ' '.join([
+            '/usr/bin/k5start', '-t', '-f', '{keytab}', '{user}', '--',
+            bash_cmd,
+        ])
+
+        shellargs = k5start_cmd.format(
+            src=afssource,
+            dst=afstarget,
+            filter=filter_file,
+            user=site['user'],
+            keytab=site['keytab'])
+
+        task = dict(name='k5start write files to AFS',
+                    shell=shellargs,
+                    when='success|bool',
+                    delegate_to='127.0.0.1')
+        tasks.append(task)
+
+        return tasks
+
+    def _makeBuilderTask(self, jobdir, builder, parameters, sequence):
+        tasks = []
+        script_fn = '%02d-%s.sh' % (sequence, str(uuid.uuid4().hex))
         script_path = os.path.join(jobdir.script_root, script_fn)
         with open(script_path, 'w') as script:
             data = builder['shell']
@@ -721,20 +1320,14 @@ class NodeWorker(object):
         remote_path = os.path.join('/tmp', script_fn)
         copy = dict(src=script_path,
                     dest=remote_path,
-                    mode=0555)
+                    mode=0o555)
         task = dict(copy=copy)
         tasks.append(task)
 
-        runner = dict(command=remote_path,
-                      cwd=parameters['WORKSPACE'],
-                      parameters=parameters)
-        task = dict(zuul_runner=runner)
-        if timeout:
-            task['when'] = '{{ timeout | int > 0 }}'
-            task['async'] = '{{ timeout }}'
-        else:
-            task['async'] = 2 * 60 * 60  # 2 hour default timeout
-        task['poll'] = 5
+        task = dict(command=remote_path)
+        task['name'] = 'command generated from JJB'
+        task['environment'] = "{{ zuul.environment }}"
+        task['args'] = dict(chdir=parameters['WORKSPACE'])
         tasks.append(task)
 
         filetask = dict(path=remote_path,
@@ -743,6 +1336,34 @@ class NodeWorker(object):
         tasks.append(task)
 
         return tasks
+
+    def _transformPublishers(self, jjb_job):
+        early_publishers = []
+        late_publishers = []
+        old_publishers = jjb_job.get('publishers', [])
+        for publisher in old_publishers:
+            early_scpfiles = []
+            late_scpfiles = []
+            if 'scp' not in publisher:
+                early_publishers.append(publisher)
+                continue
+            copy_console = False
+            for scpfile in publisher['scp']['files']:
+                if scpfile.get('copy-console'):
+                    scpfile['keep-hierarchy'] = True
+                    late_scpfiles.append(scpfile)
+                    copy_console = True
+                else:
+                    early_scpfiles.append(scpfile)
+            publisher['scp']['files'] = early_scpfiles + late_scpfiles
+            if copy_console:
+                late_publishers.append(publisher)
+            else:
+                early_publishers.append(publisher)
+        publishers = early_publishers + late_publishers
+        if old_publishers != publishers:
+            self.log.debug("Transformed job publishers")
+        return early_publishers, late_publishers
 
     def prepareAnsibleFiles(self, jobdir, gearman_job, args):
         job_name = gearman_job.name.split(':')[1]
@@ -759,120 +1380,286 @@ class NodeWorker(object):
                 inventory.write('\n')
 
         timeout = None
+        timeout_var = None
         for wrapper in jjb_job.get('wrappers', []):
             if isinstance(wrapper, dict):
-                timeout = wrapper.get('build-timeout', {})
-                if isinstance(timeout, dict):
-                    timeout = timeout.get('timeout')
-                    if timeout:
-                        timeout = timeout * 60
+                build_timeout = wrapper.get('timeout')
+                if isinstance(build_timeout, dict):
+                    timeout_var = build_timeout.get('timeout-var')
+                    timeout = build_timeout.get('timeout')
+                    if timeout is not None:
+                        timeout = int(timeout) * 60
+        if not timeout:
+            timeout = ANSIBLE_DEFAULT_TIMEOUT
+        if timeout_var:
+            parameters[timeout_var] = str(timeout * 1000)
 
-        with open(jobdir.playbook, 'w') as playbook:
+        with open(jobdir.vars, 'w') as vars_yaml:
+            variables = dict(
+                timeout=timeout,
+                environment=parameters,
+            )
+            zuul_vars = dict(zuul=variables)
+            vars_yaml.write(
+                yaml.safe_dump(zuul_vars, default_flow_style=False))
+
+        with open(jobdir.pre_playbook, 'w') as pre_playbook:
+
+            shellargs = "ssh-keyscan {{ ansible_host }} > %s" % (
+                jobdir.known_hosts)
             tasks = []
-            main_block = []
-            error_block = []
-            tasks.append(dict(block=main_block,
-                              rescue=error_block))
+            tasks.append(dict(shell=shellargs, delegate_to='127.0.0.1'))
 
             task = dict(file=dict(path='/tmp/console.html', state='absent'))
-            main_block.append(task)
+            tasks.append(task)
 
-            task = dict(zuul_console=dict(path='/tmp/console.html', port=8088))
-            main_block.append(task)
+            task = dict(zuul_console=dict(path='/tmp/console.html',
+                                          port=19885))
+            tasks.append(task)
 
             task = dict(file=dict(path=parameters['WORKSPACE'],
                                   state='directory'))
-            main_block.append(task)
+            tasks.append(task)
 
-            # TODO: remove once zuul-worker DIB element has landed
-            main_block.append(dict(shell="[ -f /usr/bin/yum ] && "
-                                   "sudo /usr/bin/yum install "
-                                   "libselinux-python || "
-                                   "/bin/true"))
+            msg = [
+                "Launched by %s" % self.manager_name,
+                "Building remotely on %s in workspace %s" % (
+                    self.name, parameters['WORKSPACE'])]
+            task = dict(zuul_log=dict(msg=msg))
+            tasks.append(task)
 
+            play = dict(hosts='node', name='Job setup', tasks=tasks)
+            pre_playbook.write(
+                yaml.safe_dump([play], default_flow_style=False))
+
+        with open(jobdir.playbook, 'w') as playbook:
+            tasks = []
+
+            sequence = 0
             for builder in jjb_job.get('builders', []):
                 if 'shell' in builder:
-                    main_block.extend(
-                        self._makeBuilderTask(jobdir, builder,
-                                              parameters, timeout))
-            task = dict(zuul_log=dict(msg="Job complete, result: SUCCESS"))
-            main_block.append(task)
+                    sequence += 1
+                    tasks.extend(
+                        self._makeBuilderTask(jobdir, builder, parameters,
+                                              sequence))
 
-            task = dict(zuul_log=dict(msg="Job complete, result: FAILURE"))
-            error_block.append(task)
+            play = dict(hosts='node', name='Job body', tasks=tasks)
+            playbook.write(yaml.safe_dump([play], default_flow_style=False))
 
-            play = dict(hosts='node', name='Job body',
-                        tasks=tasks)
-            playbook.write(yaml.dump([play], default_flow_style=False))
+        early_publishers, late_publishers = self._transformPublishers(jjb_job)
 
         with open(jobdir.post_playbook, 'w') as playbook:
+            blocks = []
+            for publishers in [early_publishers, late_publishers]:
+                block = []
+                for publisher in publishers:
+                    if 'scp' in publisher:
+                        block.extend(self._makeSCPTask(jobdir, publisher,
+                                                       parameters))
+                    if 'ftp' in publisher:
+                        block.extend(self._makeFTPTask(jobdir, publisher,
+                                                       parameters))
+                    if 'afs' in publisher:
+                        block.extend(self._makeAFSTask(jobdir, publisher,
+                                                       parameters))
+                blocks.append(block)
+
+            # The 'always' section contains the log publishing tasks,
+            # the 'block' contains all the other publishers.  This way
+            # we run the log publisher regardless of whether the rest
+            # of the publishers succeed.
             tasks = []
-            for publisher in jjb_job.get('publishers', []):
-                if 'scp' in publisher:
-                    tasks.extend(self._makeSCPTask(jobdir, publisher,
-                                                   parameters))
-                if 'ftp' in publisher:
-                    tasks.extend(self._makeFTPTask(jobdir, publisher,
-                                                   parameters))
+
+            task = dict(zuul_log=dict(msg="Job complete, result: SUCCESS"),
+                        when='success|bool')
+            blocks[0].insert(0, task)
+            task = dict(zuul_log=dict(msg="Job complete, result: FAILURE"),
+                        when='not success|bool')
+            blocks[0].insert(0, task)
+
+            tasks.append(dict(block=blocks[0],
+                              always=blocks[1]))
+
             play = dict(hosts='node', name='Publishers',
                         tasks=tasks)
-            playbook.write(yaml.dump([play], default_flow_style=False))
+            playbook.write(yaml.safe_dump([play], default_flow_style=False))
 
-        with open(jobdir.config, 'w') as config:
-            config.write('[defaults]\n')
-            config.write('hostfile = %s\n' % jobdir.inventory)
-            config.write('host_key_checking = False\n')
-            config.write('private_key_file = %s\n' % self.private_key_file)
-
-            callback_path = zuul.ansible.plugins.callback_plugins.__file__
-            callback_path = os.path.abspath(callback_path)
-            callback_path = os.path.dirname(callback_path)
-            config.write('callback_plugins = %s\n' % callback_path)
-
-            library_path = zuul.ansible.library.__file__
-            library_path = os.path.abspath(library_path)
-            library_path = os.path.dirname(library_path)
-            config.write('library = %s\n' % library_path)
+        self._writeAnsibleConfig(jobdir, jobdir.config,
+                                 library=self.library_dir)
+        self._writeAnsibleConfig(jobdir, jobdir.pre_post_config,
+                                 library=self.pre_post_library_dir)
 
         return timeout
 
-    def runAnsiblePlaybook(self, jobdir, timeout):
-        self.ansible_proc = subprocess.Popen(
-            ['ansible-playbook', jobdir.playbook,
-             '-e', 'timeout=%s' % timeout, '-v'],
+    def _writeAnsibleConfig(self, jobdir, fn, library):
+        with open(fn, 'w') as config:
+            config.write('[defaults]\n')
+            config.write('hostfile = %s\n' % jobdir.inventory)
+            config.write('local_tmp = %s/.ansible/local_tmp\n' % jobdir.root)
+            config.write('remote_tmp = %s/.ansible/remote_tmp\n' % jobdir.root)
+            config.write('private_key_file = %s\n' % self.private_key_file)
+            config.write('retry_files_enabled = False\n')
+            config.write('log_path = %s\n' % jobdir.ansible_log)
+            config.write('gathering = explicit\n')
+            config.write('library = %s\n' % library)
+            # TODO(mordred) This can be removed once we're using ansible 2.2
+            config.write('module_set_locale = False\n')
+            # bump the timeout because busy nodes may take more than
+            # 10s to respond
+            config.write('timeout = 30\n')
+
+            config.write('[ssh_connection]\n')
+            # NB: when setting pipelining = True, keep_remote_files
+            # must be False (the default).  Otherwise it apparently
+            # will override the pipelining option and effectively
+            # disable it.  Pipelining has a side effect of running the
+            # command without a tty (ie, without the -tt argument to
+            # ssh).  We require this behavior so that if a job runs a
+            # command which expects interactive input on a tty (such
+            # as sudo) it does not hang.
+            config.write('pipelining = True\n')
+            ssh_args = "-o ControlMaster=auto -o ControlPersist=60s " \
+                "-o UserKnownHostsFile=%s" % jobdir.known_hosts
+            config.write('ssh_args = %s\n' % ssh_args)
+
+    def _ansibleTimeout(self, proc, msg):
+        self._watchdog_timeout = True
+        self.log.warning(msg)
+        self.abortRunningProc(proc)
+
+    def runAnsiblePrePlaybook(self, jobdir):
+        # Set LOGNAME env variable so Ansible log_path log reports
+        # the correct user.
+        env_copy = os.environ.copy()
+        env_copy['LOGNAME'] = 'zuul'
+        env_copy['ANSIBLE_CONFIG'] = jobdir.pre_post_config
+
+        if self.options['verbose']:
+            verbose = '-vvv'
+        else:
+            verbose = '-v'
+
+        cmd = ['ansible-playbook', jobdir.pre_playbook,
+               '-e@%s' % jobdir.vars, verbose]
+        self.log.debug("Ansible pre command: %s" % (cmd,))
+
+        self.ansible_pre_proc = subprocess.Popen(
+            cmd,
             cwd=jobdir.ansible_root,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             preexec_fn=os.setsid,
+            env=env_copy,
         )
-        (out, err) = self.ansible_proc.communicate()
-        for line in out.split('\n'):
-            line = line[:1024]
-            self.log.debug("Ansible stdout: %s" % line)
-        for line in err.split('\n'):
-            line = line[:1024]
-            self.log.debug("Ansible stderr: %s" % line)
-        ret = self.ansible_proc.wait()
-        self.ansible_proc = None
+        ret = None
+        watchdog = Watchdog(ANSIBLE_DEFAULT_PRE_TIMEOUT,
+                            self._ansibleTimeout,
+                            (self.ansible_pre_proc,
+                             "Ansible pre timeout exceeded"))
+        watchdog.start()
+        try:
+            for line in iter(self.ansible_pre_proc.stdout.readline, b''):
+                line = line[:1024].rstrip()
+                self.log.debug("Ansible pre output: %s" % (line,))
+            ret = self.ansible_pre_proc.wait()
+        finally:
+            watchdog.stop()
+        self.log.debug("Ansible pre exit code: %s" % (ret,))
+        self.ansible_pre_proc = None
+        return ret == 0
+
+    def runAnsiblePlaybook(self, jobdir, timeout):
+        # Set LOGNAME env variable so Ansible log_path log reports
+        # the correct user.
+        env_copy = os.environ.copy()
+        env_copy['LOGNAME'] = 'zuul'
+        env_copy['ANSIBLE_CONFIG'] = jobdir.config
+
+        if self.options['verbose']:
+            verbose = '-vvv'
+        else:
+            verbose = '-v'
+
+        cmd = ['ansible-playbook', jobdir.playbook, verbose,
+               '-e@%s' % jobdir.vars]
+        self.log.debug("Ansible command: %s" % (cmd,))
+
+        self.ansible_job_proc = subprocess.Popen(
+            cmd,
+            cwd=jobdir.ansible_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            preexec_fn=os.setsid,
+            env=env_copy,
+        )
+        ret = None
+        watchdog = Watchdog(timeout + ANSIBLE_WATCHDOG_GRACE,
+                            self._ansibleTimeout,
+                            (self.ansible_job_proc,
+                             "Ansible timeout exceeded"))
+        watchdog.start()
+        try:
+            for line in iter(self.ansible_job_proc.stdout.readline, b''):
+                line = line[:1024].rstrip()
+                self.log.debug("Ansible output: %s" % (line,))
+            ret = self.ansible_job_proc.wait()
+        finally:
+            watchdog.stop()
+        self.log.debug("Ansible exit code: %s" % (ret,))
+        self.ansible_job_proc = None
+        if self._watchdog_timeout:
+            return False
+        if ret == 3:
+            # AnsibleHostUnreachable: We had a network issue connecting to
+            # our zuul-worker.
+            return None
+        elif ret == -9:
+            # Received abort request.
+            return None
         return ret == 0
 
     def runAnsiblePostPlaybook(self, jobdir, success):
-        proc = subprocess.Popen(
-            ['ansible-playbook', jobdir.post_playbook,
-             '-e', 'success=%s' % success, '-v'],
+        # Set LOGNAME env variable so Ansible log_path log reports
+        # the correct user.
+        env_copy = os.environ.copy()
+        env_copy['LOGNAME'] = 'zuul'
+        env_copy['ANSIBLE_CONFIG'] = jobdir.pre_post_config
+
+        if self.options['verbose']:
+            verbose = '-vvv'
+        else:
+            verbose = '-v'
+
+        cmd = ['ansible-playbook', jobdir.post_playbook,
+               '-e', 'success=%s' % success,
+               '-e@%s' % jobdir.vars,
+               verbose]
+        self.log.debug("Ansible post command: %s" % (cmd,))
+
+        self.ansible_post_proc = subprocess.Popen(
+            cmd,
             cwd=jobdir.ansible_root,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             preexec_fn=os.setsid,
+            env=env_copy,
         )
-        (out, err) = proc.communicate()
-        for line in out.split('\n'):
-            line = line[:1024]
-            self.log.debug("Ansible post stdout: %s" % line)
-        for line in err.split('\n'):
-            line = line[:1024]
-            self.log.debug("Ansible post stderr: %s" % line)
-        return proc.wait() == 0
+        ret = None
+        watchdog = Watchdog(ANSIBLE_DEFAULT_POST_TIMEOUT,
+                            self._ansibleTimeout,
+                            (self.ansible_post_proc,
+                             "Ansible post timeout exceeded"))
+        watchdog.start()
+        try:
+            for line in iter(self.ansible_post_proc.stdout.readline, b''):
+                line = line[:1024].rstrip()
+                self.log.debug("Ansible post output: %s" % (line,))
+            ret = self.ansible_post_proc.wait()
+        finally:
+            watchdog.stop()
+        self.log.debug("Ansible post exit code: %s" % (ret,))
+        self.ansible_post_proc = None
+        return ret == 0
 
 
 class JJB(jenkins_jobs.builder.Builder):
@@ -892,7 +1679,7 @@ class JJB(jenkins_jobs.builder.Builder):
             name = component
             component_data = {}
 
-        new_component = self.parser.data[component_type].get(name)
+        new_component = self.parser.data.get(component_type, {}).get(name)
         if new_component:
             for new_sub_component in new_component[component_list_type]:
                 new_components.extend(
@@ -903,7 +1690,7 @@ class JJB(jenkins_jobs.builder.Builder):
         return new_components
 
     def expandMacros(self, job):
-        for component_type in ['builder', 'publisher']:
+        for component_type in ['builder', 'publisher', 'wrapper']:
             component_list_type = component_type + 's'
             new_components = []
             for new_component in job.get(component_list_type, []):

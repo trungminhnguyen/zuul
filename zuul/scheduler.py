@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import pickle
+import six
 from six.moves import queue as Queue
 import re
 import sys
@@ -29,10 +30,10 @@ import threading
 import time
 import yaml
 
-import layoutvalidator
-import model
-from model import Pipeline, Project, ChangeQueue
-from model import ChangeishFilter, NullChange
+from zuul import layoutvalidator
+from zuul import model
+from zuul.model import Pipeline, Project, ChangeQueue
+from zuul.model import ChangeishFilter, NullChange
 from zuul import change_matcher, exceptions
 from zuul import version as zuul_version
 
@@ -127,12 +128,10 @@ class ManagementEvent(object):
     """An event that should be processed within the main queue run loop"""
     def __init__(self):
         self._wait_event = threading.Event()
-        self._exception = None
-        self._traceback = None
+        self._exc_info = None
 
-    def exception(self, e, tb):
-        self._exception = e
-        self._traceback = tb
+    def exception(self, exc_info):
+        self._exc_info = exc_info
         self._wait_event.set()
 
     def done(self):
@@ -140,8 +139,8 @@ class ManagementEvent(object):
 
     def wait(self, timeout=None):
         self._wait_event.wait(timeout)
-        if self._exception:
-            raise self._exception, None, self._traceback
+        if self._exc_info:
+            six.reraise(*self._exc_info)
         return self._wait_event.is_set()
 
 
@@ -319,13 +318,16 @@ class Scheduler(threading.Thread):
             # Any skip-if predicate can be matched to trigger a skip
             return cm.MatchAny(skip_matchers)
 
-    def registerConnections(self, connections, webapp):
+    def registerConnections(self, connections, webapp, load=True):
+        # load: whether or not to trigger the onLoad for the connection. This
+        # is useful for not doing a full load during layout validation.
         self.connections = connections
         for connection_name, connection in self.connections.items():
             logging.debug("Connection: {0}".format(connection_name))
             connection.registerScheduler(self)
             connection.registerWebapp(webapp)
-            connection.onLoad()
+            if load:
+                connection.onLoad()
 
     def stopConnections(self):
         for connection_name, connection in self.connections.items():
@@ -419,7 +421,9 @@ class Scheduler(threading.Thread):
                     base = os.path.dirname(os.path.realpath(config_path))
                     fn = os.path.join(base, fn)
                 fn = os.path.expanduser(fn)
-                execfile(fn, config_env)
+                with open(fn) as _f:
+                    code = compile(_f.read(), fn, 'exec')
+                    six.exec_(code, config_env)
 
         for conf_pipeline in data.get('pipelines', []):
             pipeline = Pipeline(conf_pipeline['name'])
@@ -655,12 +659,12 @@ class Scheduler(threading.Thread):
     def setMerger(self, merger):
         self.merger = merger
 
-    def getProject(self, name, create_foreign=False):
+    def getProject(self, name):
         self.layout_lock.acquire()
         p = None
         try:
             p = self.layout.projects.get(name)
-            if p is None and create_foreign:
+            if p is None:
                 self.log.info("Registering foreign project: %s" % name)
                 p = Project(name, foreign=True)
                 self.layout.projects[name] = p
@@ -1087,8 +1091,8 @@ class Scheduler(threading.Thread):
             else:
                 self.log.error("Unable to handle event %s" % event)
             event.done()
-        except Exception as e:
-            event.exception(e, sys.exc_info()[2])
+        except Exception:
+            event.exception(sys.exc_info())
         self.management_event_queue.task_done()
 
     def process_result_queue(self):
@@ -1138,10 +1142,11 @@ class Scheduler(threading.Thread):
             return
         if build.end_time and build.start_time and build.result:
             duration = build.end_time - build.start_time
-        try:
-            self.time_database.update(build.job.name, duration, build.result)
-        except Exception:
-            self.log.exception("Exception recording build time:")
+            try:
+                self.time_database.update(
+                    build.job.name, duration, build.result)
+            except Exception:
+                self.log.exception("Exception recording build time:")
         pipeline.manager.onBuildCompleted(event.build)
 
     def _doMergeCompletedEvent(self, event):

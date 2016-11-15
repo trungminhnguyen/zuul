@@ -29,25 +29,28 @@ class Console(object):
 
     def addLine(self, ln):
         ts = datetime.datetime.now()
-        outln = '%s %s' % (str(ts), ln)
+        outln = '%s | %s' % (str(ts), ln)
         self.logfile.write(outln)
 
 
 def log(msg):
+    if not isinstance(msg, list):
+        msg = [msg]
     with Console() as console:
-        console.addLine("[Zuul] %s\n" % msg)
+        for line in msg:
+            console.addLine("[Zuul] %s\n" % line)
 
 
 def main():
     module = AnsibleModule(
         argument_spec=dict(
-            msg=dict(required=True, default=''),
+            msg=dict(required=True, type='raw'),
         )
     )
 
     p = module.params
-    ret = log(p['msg'])
-    module.exit_json(changed=True, rc=ret)
+    log(p['msg'])
+    module.exit_json(changed=True)
 
 from ansible.module_utils.basic import *  # noqa
 

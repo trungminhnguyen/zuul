@@ -20,11 +20,10 @@ import os
 import re
 import shutil
 import time
-import urllib
-import urllib2
 import yaml
 
 import git
+from six.moves import urllib
 import testtools
 
 import zuul.change_matcher
@@ -1484,7 +1483,7 @@ jobs:
         self.worker.build_history = []
 
         path = os.path.join(self.git_root, "org/project")
-        print repack_repo(path)
+        print(repack_repo(path))
 
         A = self.fake_gerrit.addFakeChange('org/project', 'master', 'A')
         A.addApproval('CRVW', 2)
@@ -1509,9 +1508,9 @@ jobs:
         A = self.fake_gerrit.addFakeChange('org/project1', 'master', 'A')
         A.addPatchset(large=True)
         path = os.path.join(self.upstream_root, "org/project1")
-        print repack_repo(path)
+        print(repack_repo(path))
         path = os.path.join(self.git_root, "org/project1")
-        print repack_repo(path)
+        print(repack_repo(path))
 
         A.addApproval('CRVW', 2)
         self.fake_gerrit.addEvent(A.addApproval('APRV', 1))
@@ -2275,8 +2274,8 @@ jobs:
 
         port = self.webapp.server.socket.getsockname()[1]
 
-        req = urllib2.Request("http://localhost:%s/status.json" % port)
-        f = urllib2.urlopen(req)
+        req = urllib.request.Request("http://localhost:%s/status.json" % port)
+        f = urllib.request.urlopen(req)
         headers = f.info()
         self.assertIn('Content-Length', headers)
         self.assertIn('Content-Type', headers)
@@ -2881,7 +2880,8 @@ jobs:
 
         port = self.webapp.server.socket.getsockname()[1]
 
-        f = urllib.urlopen("http://localhost:%s/status.json" % port)
+        req = urllib.request.Request("http://localhost:%s/status.json" % port)
+        f = urllib.request.urlopen(req)
         data = f.read()
 
         self.worker.hold_jobs_in_build = False
@@ -4267,6 +4267,25 @@ For CI problems and help debugging, contact ci@example.org"""
         self.waitUntilSettled()
         self.assertEqual(self.history[-1].changes, '3,2 2,1 1,2')
 
+    def test_crd_check_unknown(self):
+        "Test unknown projects in independent pipeline"
+        self.init_repo("org/unknown")
+        A = self.fake_gerrit.addFakeChange('org/project1', 'master', 'A')
+        B = self.fake_gerrit.addFakeChange('org/unknown', 'master', 'D')
+        # A Depends-On: B
+        A.data['commitMessage'] = '%s\n\nDepends-On: %s\n' % (
+            A.subject, B.data['id'])
+
+        # Make sure zuul has seen an event on B.
+        self.fake_gerrit.addEvent(B.getPatchsetCreatedEvent(1))
+        self.fake_gerrit.addEvent(A.getPatchsetCreatedEvent(1))
+        self.waitUntilSettled()
+
+        self.assertEqual(A.data['status'], 'NEW')
+        self.assertEqual(A.reported, 1)
+        self.assertEqual(B.data['status'], 'NEW')
+        self.assertEqual(B.reported, 0)
+
     def test_crd_cycle_join(self):
         "Test an updated change creates a cycle"
         A = self.fake_gerrit.addFakeChange('org/project2', 'master', 'A')
@@ -4427,3 +4446,38 @@ For CI problems and help debugging, contact ci@example.org"""
         self.assertIn('Build failed.', K.messages[0])
         # No more messages reported via smtp
         self.assertEqual(3, len(self.smtp_messages))
+
+    def test_success_pattern(self):
+        "Ensure bad build params are ignored"
+
+        # Use SMTP reporter to grab the result message easier
+        self.init_repo("org/docs")
+        self.config.set('zuul', 'layout_config',
+                        'tests/fixtures/layout-success-pattern.yaml')
+        self.sched.reconfigure(self.config)
+        self.worker.hold_jobs_in_build = True
+        self.registerJobs()
+
+        A = self.fake_gerrit.addFakeChange('org/docs', 'master', 'A')
+        self.fake_gerrit.addEvent(A.getPatchsetCreatedEvent(1))
+        self.waitUntilSettled()
+
+        # Grab build id
+        self.assertEqual(len(self.builds), 1)
+        uuid = self.builds[0].unique[:7]
+
+        self.worker.hold_jobs_in_build = False
+        self.worker.release()
+        self.waitUntilSettled()
+
+        self.assertEqual(len(self.smtp_messages), 1)
+        body = self.smtp_messages[0]['body'].splitlines()
+        self.assertEqual('Build succeeded.', body[0])
+
+        self.assertIn(
+            '- docs-draft-test http://docs-draft.example.org/1/1/1/check/'
+            'docs-draft-test/%s/publish-docs/' % uuid,
+            body[2])
+        self.assertIn(
+            '- docs-draft-test2 https://server/job/docs-draft-test2/1/',
+            body[3])

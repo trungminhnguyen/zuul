@@ -7,7 +7,7 @@ discover
 fixtures>=0.3.14
 python-keystoneclient>=0.4.2
 python-subunit
-python-swiftclient>=1.6
+python-swiftclient>=1.6,<3.0.0
 testrepository>=0.0.17
 testtools>=0.9.32
 mock

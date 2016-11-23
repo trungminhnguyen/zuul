@@ -16,9 +16,12 @@ BuildArch:        x86_64
 BuildRoot:        %{_tmppath}/%{name}-%{version}-root
 
 Requires:         python-virtualenv
-BuildRequires:    python-virtualenv
+BuildRequires:    git
 BuildRequires:    libffi-devel
+BuildRequires:    libjpeg-devel
 BuildRequires:    openssl-devel
+BuildRequires:    python-pip
+BuildRequires:    python-virtualenv
 
 %prep
 %setup -q -c
@@ -30,6 +33,10 @@ make build
 %install
 rm -fr $RPM_BUILD_ROOT
 make DESTDIR=$RPM_BUILD_ROOT%{install_dir} install
+
+%check
+export PBR_VERSION="%{version}-%{release}"
+make check
 
 %clean
 rm -rf $RPM_BUILD_ROOT

@@ -17,18 +17,23 @@ sources:
 	$(VIRTUALENV) $(VENV_DIR)
 	$(VENV_ACTIVATE) && $(PIP_DOWNLOAD) pip
 	$(VENV_ACTIVATE) && $(PIP_INSTALL_FROM_CACHE) --upgrade pip # fails with old pip
-	$(VENV_ACTIVATE) && $(PIP_DOWNLOAD) --requirement requirements.txt
+	$(VENV_ACTIVATE) && \
+		$(PIP_DOWNLOAD) --requirement requirements.txt \
+		--requirement test-requirements.txt
 	./etc/status/fetch-dependencies.sh # web assets fetch
 	tar rvf $(SOURCES) $(PIP_DEPS_DIR) $(WEBAPP_DIR)
 
 # Build zuul bundle from zuul and it's dependencies
-build:
+build: build.state
+
+build.state:
 	$(VIRTUALENV) $(VENV_DIR)
 	$(VENV_ACTIVATE) && $(PIP_INSTALL_FROM_CACHE) --upgrade pip # fails with old pip
 	$(VENV_ACTIVATE) && $(PIP_INSTALL_FROM_CACHE) --requirement requirements.txt
 	$(VENV_ACTIVATE) && python setup.py install
 	rm -f $(VENV_DIR)/pip-selfcheck.json
 	$(VIRTUALENV) --relocatable $(VENV_DIR)
+	touch $@
 
 # Install zuul bundle into DESTDIR
 install:
@@ -43,3 +48,9 @@ test-logging:
 	rm -f integration/.test/log/*
 	tox -e venv -- timeout --preserve-status 10 zuul-server -c integration/config/zuul.conf -d
 	grep -F 'zuul.GithubConnection' integration/.test/log/zuul.log
+
+check: build.state
+	$(VENV_ACTIVATE) && \
+		$(PIP_INSTALL_FROM_CACHE) --requirement test-requirements.txt
+	$(VENV_ACTIVATE) && \
+		OS_TEST_TIMEOUT=30 python setup.py testr --slowest

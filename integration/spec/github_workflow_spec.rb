@@ -5,10 +5,12 @@
 # GITHUB_TARGET_BRANCH
 
 ## Assumptions
-# there's a repository user/repo
+# there's a repository GITHUB_USER/GITHUB_REPO
 # GITHUB_TARGET_BRANCH exists
-# zuul is configured to run a check pipeline with some job(s) on user/repo
-# zuul is configured to run a gate pipeline with some job(s) on user/repo
+# zuul is configured to run a check pipeline with some job(s)
+#   on GITHUB_USER/GITHUB_REPO
+# zuul is configured to run a gate pipeline with some job(s)
+#   on GITHUB_USER/GITHUB_REPO
 
 require 'rubygems'
 

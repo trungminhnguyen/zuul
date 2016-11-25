@@ -86,4 +86,4 @@ class BaseConnection(object):
         self.webapp.unregister_path(self._connectionPath(path))
 
     def _connectionPath(self, path):
-        return '/connection/%s%s' % (self.connection_name, path)
+        return '/connection/%s/%s' % (self.connection_name, path)

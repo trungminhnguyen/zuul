@@ -77,6 +77,7 @@ class GithubWebhookListener():
         base_repo = body.get('repository')
 
         event = GithubTriggerEvent()
+        event.connection_name = self.connection.connection_name
         event.trigger_name = 'github'
         event.project_name = base_repo.get('full_name')
 
@@ -178,6 +179,7 @@ class GithubWebhookListener():
 
     def _pull_request_to_event(self, pr_body):
         event = GithubTriggerEvent()
+        event.connection_name = self.connection.connection_name
         event.trigger_name = 'github'
 
         base = pr_body.get('base')
@@ -236,7 +238,7 @@ class GithubUser(collections.Mapping):
 class GithubConnection(BaseConnection):
     driver_name = 'github'
     log = logging.getLogger("zuul.GithubConnection")
-    payload_path = '/payload'
+    payload_path = 'payload'
     git_user = 'git'
     git_host = 'github.com'
 

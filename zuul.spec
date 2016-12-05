@@ -3,8 +3,8 @@
 Name:             zuul
 Summary:          GoodData customized Zuul gatekeeper
 Epoch:            1
-Version:          2.1.1
-Release:          28%{?dist}.gdc
+Version:          2.5.1
+Release:          1%{?dist}.gdc
 
 Vendor:           GoodData
 Group:            GoodData/Tools
@@ -53,6 +53,9 @@ GoodData customized Zuul gatekeeper
 %attr(0755, root, root) %{install_dir}/status
 
 %changelog
+* Mon Dec 05 2016 Jan Hruban <jan.hruban@gooddata.com> 2.5.1-1.gdc
+- The source code is already above tag 2.5.1. Only bump the version.
+
 * Tue Dec 02 2016 Jan Hruban <jan.hruban@gooddata.com> 2.1.1-28.gdc
 - Allow gerrit + github work together
 - Upstream changes

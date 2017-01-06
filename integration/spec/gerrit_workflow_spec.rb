@@ -13,18 +13,21 @@
 require 'rubygems'
 
 require 'fileutils'
-require 'git'
 require 'json'
 require 'rspec'
 require 'timeout'
 require 'English'
+
+require_relative 'env_config'
+require_relative 'git_repo'
 
 ZUUL_USER = 'qa-zuul'.freeze
 CHECK_APPROVAL_TYPE = 'Verified'.freeze
 
 describe 'Gerrit change' do
   before(:all) do
-    @config = Config.new
+    @config = EnvConfig.new %w(GERRIT_HOST GERRIT_PORT GERRIT_USER GERRIT_REPO
+                               GERRIT_EMAIL)
   end
 
   it 'runs check and gate pipelines' do
@@ -53,35 +56,6 @@ describe 'Gerrit change' do
     gate_status = gerrit.verified_change_status(change_number)
     expect(gate_status).to eq('1')
   end
-end
-
-# Class holding the environment configuration
-class Config
-  ENV_VARS = %w(GERRIT_HOST GERRIT_PORT GERRIT_USER GERRIT_REPO
-                GERRIT_EMAIL).freeze
-
-  def initialize
-    config = get_required_variables(ENV_VARS)
-    config.each do |var_name, var_value|
-      self.class.send(:define_method, var_name) do
-        var_value
-      end
-    end
-  end
-
-  def get_required_variables(vars)
-    missing_vars = vars.select do |var|
-      ENV[var].nil?
-    end
-    raise("Undefined variables: #{missing_vars.join(' ')}") \
-      unless missing_vars.empty?
-
-    vars.each_with_object({}) do |var, vars_hash|
-      vars_hash[var.sub(/^GERRIT_/, '').downcase] = ENV[var]
-    end
-  end
-
-  private :get_required_variables
 end
 
 # Class for accessing the gerrit
@@ -167,45 +141,4 @@ class Gerrit
   end
 
   private :query_single_change, :gerrit_cmd, :latest_approval
-end
-
-# Class for manipulating git repository
-class GitRepo
-  def initialize(host, port, user, repo, email)
-    @git = clone_repo(host, port, user, repo)
-    @git.config('user.email', email)
-    @git_dir = @git.dir.path
-  end
-
-  def clone_repo(host, port, user, repo)
-    FileUtils.rm_rf repo
-    Git.clone("ssh://#{user}@#{host}:#{port}/#{repo}", repo)
-  end
-
-  def create_test_commit
-    rand_string = rand(36**6).to_s(36)
-    new_file = File.join(@git_dir, 'test.txt')
-    File.open(new_file, 'w') { |f| f.write(rand_string) }
-    @git.add(new_file)
-    commit_msg = "Add content to test.txt - #{rand_string}"
-    @git.commit(commit_msg)
-  end
-
-  def create_testing_gerrit_change
-    create_test_commit
-    output = ''
-    Dir.chdir(@git_dir) do
-      output = `git push origin HEAD:refs/for/master 2>&1`
-    end
-    raise("Creating gerrit change failed:\n" + output) \
-      if $CHILD_STATUS.exitstatus.nonzero?
-    parse_change_number(output)
-  end
-
-  def parse_change_number(string)
-    string.lines.grep(%r{^remote: *\S+/(\d+) +.*}) \
-      { Regexp.last_match(1) } [0]
-  end
-
-  private :clone_repo, :parse_change_number
 end

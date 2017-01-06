@@ -5,79 +5,61 @@
 # GITHUB_TARGET_BRANCH
 
 ## Assumptions
-# there's a repository user/repo
+# there's a repository GITHUB_USER/GITHUB_REPO
 # GITHUB_TARGET_BRANCH exists
-# zuul is configured to run a check pipeline with some job(s) on user/repo
-# zuul is configured to run a gate pipeline with some job(s) on user/repo
+# zuul is configured to run a check pipeline with some job(s)
+#   on GITHUB_USER/GITHUB_REPO
+# zuul is configured to run a gate pipeline with some job(s)
+#   on GITHUB_USER/GITHUB_REPO
 
 require 'rubygems'
 
 require 'fileutils'
-require 'git'
 require 'octokit'
 require 'rspec'
 require 'timeout'
 
+require_relative 'env_config'
+require_relative 'git_repo'
+
 describe 'Github pull request' do
   before(:all) do
-    required_vars = %w(GITHUB_API_TOKEN GITHUB_USER GITHUB_REPO
-                       GITHUB_TARGET_BRANCH)
-    missing_vars = required_vars.select do |var|
-      ENV[var].nil?
-    end
-    unless missing_vars.empty?
-      fail("Undefined variables: #{missing_vars.join(' ')}")
-    end
-    @api_token = ENV['GITHUB_API_TOKEN']
-    @user = ENV['GITHUB_USER']
-    @repo = ENV['GITHUB_REPO']
-    @target_branch = ENV['GITHUB_TARGET_BRANCH']
+    @config = EnvConfig.new %w(GITHUB_API_TOKEN GITHUB_USER GITHUB_REPO
+                               GITHUB_TARGET_BRANCH)
   end
 
   it 'runs check and gate pipelines' do
-    repo_fqn = "#{@user}/#{@repo}"
-    rand_string = rand(36**6).to_s(36)
-    test_branch = "test_#{rand_string}"
+    repo_fqn = "#{@config.user}/#{@config.repo}"
 
-    # clone the repo
-    FileUtils.rm_rf @repo
-    git = Git.clone("ssh://git@github.com/#{@user}/#{@repo}.git", @repo)
-
-    # create new branch based on target branch
-    git.branch(test_branch).checkout
-    git.reset_hard("origin/#{@target_branch}")
-
-    # add new content and commit
-    new_file = File.join(git.dir.path, 'test.txt')
-    File.open(new_file, 'w') { |f| f.write(rand_string) }
-    git.add(new_file)
-    commit_msg = "Add content to test.txt - #{rand_string}"
-    git.commit(commit_msg)
+    puts "Cloning the repository #{repo_fqn}"
+    git_repo = GitRepo.new('github.com', '22', 'git', repo_fqn)
+    test_branch = git_repo.create_test_branch(@config.target_branch)
+    git_repo.create_test_commit
 
     # push and create a pull request
-    git.push('origin', test_branch, force: true)
-    github = Octokit::Client.new(access_token: @api_token)
-    pull = github.create_pull_request(repo_fqn, @target_branch, test_branch,
-                                      commit_msg)
-
-    puts "opening pull request #{pull.html_url}"
+    puts 'Creating pull request'
+    git_repo.git.push('origin', test_branch, force: true)
+    github = Octokit::Client.new(access_token: @config.api_token)
+    pull = github.create_pull_request(repo_fqn, @config.target_branch,
+                                      test_branch, 'Testing PR')
+    puts "Created pull request #{pull.html_url}"
 
     # poll on the pull request commit status named 'check'
-    puts 'waiting for check status'
+    puts 'Waiting for check status'
     check_status = wait_successful_pr_status(github, repo_fqn, pull, 'check')
     expect(check_status).to eq('success')
 
     # Add a 'merge' label to the pull request
-    puts 'adding a merge label'
+    puts 'Adding a merge label'
     github.add_labels_to_an_issue(repo_fqn, pull.number, ['merge'])
 
-    # # poll on the pull request commit status named 'gate'
-    puts 'waiting for gate status'
+    # poll on the pull request commit status named 'gate'
+    puts 'Waiting for gate status'
     gate_status = wait_successful_pr_status(github, repo_fqn, pull, 'gate')
     expect(gate_status).to eq('success')
 
     # # verify the PR is merged
-    puts 'checking the PR merged state'
+    puts 'Checking the PR merged state'
     pr_merged = wait_pr_merged(github, repo_fqn, pull)
     expect(pr_merged).to be(true)
   end

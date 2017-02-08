@@ -1251,7 +1251,7 @@ class BasePipelineManager(object):
             for x in tree.job_trees:
                 log_jobs(x, indent + 2)
 
-        for p in layout.projects.values():
+        for _, p in sorted(layout.projects.items(), key=lambda p: p[0]):
             tree = self.pipeline.getJobTree(p)
             if tree:
                 self.log.info("    %s" % p)

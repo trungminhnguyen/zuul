@@ -734,6 +734,11 @@ class FakeGithubConnection(zuul.connection.github.GithubConnection):
         }
         return (name, data)
 
+    def getPingEvent(self):
+        name = 'ping'
+        data = {}
+        return (name, data)
+
     def emitEvent(self, event):
         """Emulates sending the GitHub webhook event to the connection."""
         port = self.webapp.server.socket.getsockname()[1]
@@ -744,7 +749,7 @@ class FakeGithubConnection(zuul.connection.github.GithubConnection):
             'http://localhost:%s/connection/%s/payload'
             % (port, self.connection_name),
             data=payload, headers=headers)
-        urllib.request.urlopen(req)
+        return urllib.request.urlopen(req)
 
     def getPull(self, owner, project, number):
         pr = self.pull_requests[number - 1]

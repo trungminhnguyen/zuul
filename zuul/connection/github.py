@@ -142,6 +142,9 @@ class GithubWebhookListener():
         event.type = 'pr-comment'
         return event
 
+    def _event_ping(self, request):
+        return None
+
     def _issue_to_pull_request(self, body):
         number = body.get('issue').get('number')
         project_name = body.get('repository').get('full_name')

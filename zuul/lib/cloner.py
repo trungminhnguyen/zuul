@@ -16,7 +16,6 @@
 import git
 import logging
 import os
-import re
 import yaml
 
 import six
@@ -123,6 +122,21 @@ class Cloner(object):
                            project, ref)
             return False
 
+    def getOverrideRefs(self, indicated_branch, fallback_branch):
+
+        if indicated_branch:
+            override_zuul_ref = self.zuul_ref.replace(self.zuul_branch + '/',
+                                                      indicated_branch + '/')
+        else:
+            override_zuul_ref = None
+
+        if self.zuul_branch:
+            fallback_zuul_ref = self.zuul_ref.replace(self.zuul_branch + '/',
+                                                      fallback_branch + '/')
+        else:
+            fallback_zuul_ref = None
+        return (override_zuul_ref, fallback_zuul_ref)
+
     def prepareRepo(self, project, dest):
         """Clone a repository for project at dest and apply a reference
         suitable for testing. The reference lookup is attempted in this order:
@@ -163,12 +177,6 @@ class Cloner(object):
         if project in self.project_branches:
             indicated_branch = self.project_branches[project]
 
-        if indicated_branch:
-            override_zuul_ref = re.sub(self.zuul_branch, indicated_branch,
-                                       self.zuul_ref)
-        else:
-            override_zuul_ref = None
-
         if indicated_branch and repo.hasBranch(indicated_branch):
             self.log.info("upstream repo has branch %s", indicated_branch)
             fallback_branch = indicated_branch
@@ -179,11 +187,9 @@ class Cloner(object):
             # FIXME should be origin HEAD branch which might not be 'master'
             fallback_branch = 'master'
 
-        if self.zuul_branch:
-            fallback_zuul_ref = re.sub(self.zuul_branch, fallback_branch,
-                                       self.zuul_ref)
-        else:
-            fallback_zuul_ref = None
+        (override_zuul_ref,
+         fallback_zuul_ref) = self.getOverrideRefs(indicated_branch,
+                                                   fallback_branch)
 
         # If the user has requested an explicit revision to be checked out,
         # we use it above all else, and if we cannot satisfy this requirement

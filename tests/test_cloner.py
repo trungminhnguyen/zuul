@@ -620,3 +620,38 @@ class TestCloner(ZuulTestCase):
         self.assertEqual(
             repos[master_project].rev_parse('HEAD').hexsha,
             repos[master_project].rev_parse('master').hexsha)
+
+    def test_override_zuul_refs(self):
+        cloner = zuul.lib.cloner.Cloner(
+            git_base_url=self.upstream_root,
+            projects=['project1'],
+            workspace=self.workspace_root,
+            zuul_branch='7.2',
+            zuul_ref='refs/zuul/7.2/Z86a9b9068320423db7bb882627187d2b',
+            zuul_url=self.git_root,
+            branch='abcd'
+        )
+
+        (override_zuul_ref,
+         fallback_zuul_ref) = cloner.getOverrideRefs('abcd', 'master')
+        self.assertEqual(override_zuul_ref,
+                         'refs/zuul/abcd/Z86a9b9068320423db7bb882627187d2b')
+        self.assertEqual(fallback_zuul_ref,
+                         'refs/zuul/master/Z86a9b9068320423db7bb882627187d2b')
+
+        cloner2 = zuul.lib.cloner.Cloner(
+            git_base_url=self.upstream_root,
+            projects=['project1'],
+            workspace=self.workspace_root,
+            zuul_branch='7d2b',
+            zuul_ref='refs/zuul/7d2b/Z86a9b9068320423db7bb882627187d2b',
+            zuul_url=self.git_root,
+            branch='abcd'
+        )
+
+        (override_zuul_ref,
+         fallback_zuul_ref) = cloner2.getOverrideRefs('abcd', 'master')
+        self.assertEqual(override_zuul_ref,
+                         'refs/zuul/abcd/Z86a9b9068320423db7bb882627187d2b')
+        self.assertEqual(fallback_zuul_ref,
+                         'refs/zuul/master/Z86a9b9068320423db7bb882627187d2b')

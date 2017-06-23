@@ -79,6 +79,9 @@ class Server(zuul.cmd.ZuulApp):
         self.stop_gear_server()
         os._exit(0)
 
+    def early_handler(self, signum, frame):
+        self.early_signals.append((signum, frame))
+
     def test_config(self, job_list_path):
         # See comment at top of file about zuul imports
         import zuul.scheduler
@@ -145,6 +148,12 @@ class Server(zuul.cmd.ZuulApp):
             os.kill(self.gear_server_pid, signal.SIGKILL)
 
     def main(self):
+        # Pre-initialization signal handling
+        self.early_signals = []
+        signal.signal(signal.SIGHUP, self.early_handler)
+        signal.signal(signal.SIGUSR1, self.early_handler)
+        signal.signal(signal.SIGTERM, self.early_handler)
+
         # See comment at top of file about zuul imports
         import zuul.scheduler
         import zuul.launcher.gearman
@@ -206,6 +215,16 @@ class Server(zuul.cmd.ZuulApp):
         signal.signal(signal.SIGHUP, self.reconfigure_handler)
         signal.signal(signal.SIGUSR1, self.exit_handler)
         signal.signal(signal.SIGTERM, self.term_handler)
+
+        for signum, frame in self.early_signals:
+            if signum == signal.SIGHUP:
+                self.reconfigure_handler(signum, frame)
+            elif signum == signal.SIGUSR1:
+                self.exit_handler(signum, frame)
+            elif signum == signal.SIGTERM:
+                self.term_handler(signum, frame)
+        del self.early_signals
+
         while True:
             try:
                 signal.pause()

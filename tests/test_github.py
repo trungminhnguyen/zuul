@@ -495,3 +495,7 @@ class TestGithub(ZuulTestCase):
         self.assertNotIn('merge', A.labels)
         self.assertNotIn('merge', B.labels)
         self.assertNotIn('merge', C.labels)
+
+    def test_ping_event(self):
+        ret = self.fake_github.emitEvent(self.fake_github.getPingEvent())
+        self.assertEqual(200, ret.getcode())

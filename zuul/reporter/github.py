@@ -73,7 +73,7 @@ class GithubReporter(BaseReporter):
     def setPullStatus(self, pipeline, item):
         owner, project = item.change.project.name.split('/')
         sha = item.change.patchset
-        context = pipeline.name
+        context = pipeline.github_status_name
         state = self._github_status_value
         url = ''
         if self.sched.config.has_option('zuul', 'status_url'):

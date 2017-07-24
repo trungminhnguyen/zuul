@@ -591,6 +591,12 @@ explanation of each of the parameters::
   unsuccessful change merges.
   Default: ``2``.
 
+**github-status-name**
+  Github distinguishes between statuses of various pipelines by their names.
+  This is useful if a status with custom name needs to be reported
+  back to Github.
+  Default: name of the pipeline
+
 Some example pipeline configurations are included in the sample layout
 file.  The first is called a *check* pipeline::
 

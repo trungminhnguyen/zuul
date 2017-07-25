@@ -499,3 +499,24 @@ class TestGithub(ZuulTestCase):
     def test_ping_event(self):
         ret = self.fake_github.emitEvent(self.fake_github.getPingEvent())
         self.assertEqual(200, ret.getcode())
+
+    def test_default_github_status_name(self):
+        "Tests that Zuul reports status with pipeline name by default"
+        A = self.fake_github.openFakePullRequest('org/project', 'master', 'A')
+        self.fake_github.emitEvent(A.getPullRequestOpenedEvent())
+        self.waitUntilSettled()
+
+        self.assertIn('check', A.statuses)
+
+    def test_custom_github_status_name(self):
+        "Tests that Zuul reports status with custom name when defined"
+        self.config.set('zuul', 'layout_config',
+                        'tests/fixtures/layout-github-status-name.yaml')
+        self.sched.reconfigure(self.config)
+        self.registerJobs()
+
+        A = self.fake_github.openFakePullRequest('org/project', 'master', 'A')
+        self.fake_github.emitEvent(A.getPullRequestOpenedEvent())
+        self.waitUntilSettled()
+
+        self.assertIn('abcd', A.statuses)

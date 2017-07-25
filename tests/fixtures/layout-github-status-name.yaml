@@ -1,0 +1,39 @@
+pipelines:
+  - name: check
+    description: Standard check
+    manager: IndependentPipelineManager
+    github-status-name: abcd
+    source: github
+    trigger:
+      github:
+        - event:
+            - pr-open
+            - pr-change
+            - pr-reopen
+          branch: '^master$'
+        - event: pr-comment
+          comment: 'test me'
+    start:
+      github:
+        status: true
+    success:
+      github:
+        status: true
+        comment: true
+    failure:
+      github:
+        status: true
+        comment: true
+
+jobs:
+  - name: ^.*-merge$
+    failure-message: Unable to merge change
+    hold-following-changes: true
+  - name: project-testfile
+    files:
+      - '.*-requires'
+
+projects:
+  - name: org/project
+    check:
+      - project-merge

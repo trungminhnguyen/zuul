@@ -448,6 +448,9 @@ class Scheduler(threading.Thread):
                 'dequeue-on-new-patchset', True)
             pipeline.ignore_dependencies = conf_pipeline.get(
                 'ignore-dependencies', False)
+            pipeline.github_status_name = conf_pipeline.get(
+                'github-status-name',
+                conf_pipeline['name'])
 
             for conf_key, action in self._reporter_actions.items():
                 reporter_set = []

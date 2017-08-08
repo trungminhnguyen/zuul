@@ -4,7 +4,7 @@ Name:             zuul
 Summary:          GoodData customized Zuul gatekeeper
 Epoch:            1
 Version:          2.5.1
-Release:          1%{?dist}.gdc
+Release:          2%{?dist}.gdc
 
 Vendor:           GoodData
 Group:            GoodData/Tools
@@ -53,6 +53,15 @@ GoodData customized Zuul gatekeeper
 %attr(0755, root, root) %{install_dir}/status
 
 %changelog
+* Mon Aug 08 2017 Michal Vanco <michal.vanco@gooddata.com> 2.5.1-2.gdc
+- Gerrit integration test
+- Scheduler logs projects sorted by name
+- BUGFIX: SETI-380 Zuul exits when HUP is send right after service start
+- BUGFIX: SETI-384 Zuul - handle ping events
+- BUGFIX: SETI-379 zuul-cloner tries to fetch a wrong revision
+- FEATURE: SETI-668 Support custom name of status in zuul pipelines
+- BUGFIX: SETI-190 Zuul: report back to pull request when no jobs are run
+
 * Mon Dec 05 2016 Jan Hruban <jan.hruban@gooddata.com> 2.5.1-1.gdc
 - The source code is already above tag 2.5.1. Only bump the version.
 

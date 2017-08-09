@@ -51,6 +51,7 @@ test-logging:
 
 check: build.state
 	$(VENV_ACTIVATE) && \
-		$(PIP_INSTALL_FROM_CACHE) --requirement test-requirements.txt
+		$(PIP_INSTALL_FROM_CACHE) --requirement test-requirements.txt \
+		--requirement requirements.txt
 	$(VENV_ACTIVATE) && \
 		OS_TEST_TIMEOUT=30 python setup.py testr --slowest

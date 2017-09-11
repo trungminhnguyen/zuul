@@ -15,17 +15,17 @@ class GitRepo
     Git.clone("ssh://#{user}@#{host}:#{port}/#{repo}", repo)
   end
 
-  def create_test_commit
+  def create_test_commit(server)
     rand_string = rand(36**6).to_s(36)
-    new_file = File.join(@git_dir, 'test.txt')
+    new_file = File.join(@git_dir, "test-#{server}.txt")
     File.open(new_file, 'w') { |f| f.write(rand_string) }
     @git.add(new_file)
     commit_msg = "Add content to test.txt - #{rand_string}"
     @git.commit(commit_msg)
   end
 
-  def create_testing_gerrit_change
-    create_test_commit
+  def create_testing_gerrit_change(server)
+    create_test_commit(server)
     output = ''
     Dir.chdir(@git_dir) do
       output = `git push origin HEAD:refs/for/master 2>&1`

@@ -27,7 +27,7 @@ CHECK_APPROVAL_TYPE = 'Verified'.freeze
 describe 'Gerrit change' do
   before(:all) do
     @config = EnvConfig.new %w(GERRIT_HOST GERRIT_PORT GERRIT_USER GERRIT_REPO
-                               GERRIT_EMAIL)
+                               GERRIT_EMAIL JENKINS_SERVER)
   end
 
   it 'runs check and gate pipelines' do
@@ -37,7 +37,8 @@ describe 'Gerrit change' do
                            @config.repo, @config.email)
 
     puts 'Creating new gerrit change'
-    change_number = git_repo.create_testing_gerrit_change
+    filename = "test#{@config.server}.txt"
+    change_number = git_repo.create_testing_gerrit_change(filename)
     puts "Created new gerrit change: https://#{@config.host}/#{change_number}"
 
     puts 'Checking the status from the check pipeline'

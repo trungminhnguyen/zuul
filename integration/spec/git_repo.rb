@@ -20,7 +20,7 @@ class GitRepo
     new_file = File.join(@git_dir, filename)
     File.open(new_file, 'w') { |f| f.write(rand_string) }
     @git.add(new_file)
-    commit_msg = "Add content to test.txt - #{rand_string}"
+    commit_msg = "Add content to #{filename} - #{rand_string}"
     @git.commit(commit_msg)
   end
 
